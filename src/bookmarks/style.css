@@ -1,0 +1,252 @@
+:root {
+  --bg: #0f0f13;
+  --surface: #1a1a24;
+  --surface-hover: #22222e;
+  --border: #2a2a38;
+  --text: #a0a0b8;
+  --text-h: #e8e8f0;
+  --accent: #7c6aef;
+  --danger: #e05555;
+  --danger-dim: rgba(224, 85, 85, 0.15);
+  --sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  min-height: 100vh;
+}
+
+#app {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 18px 16px;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-h);
+  letter-spacing: -0.3px;
+}
+
+.stats {
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0.6;
+}
+
+.toolbar {
+  margin-bottom: 8px;
+}
+
+input[type="search"] {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  color: var(--text-h);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+input[type="search"]:focus {
+  border-color: var(--accent);
+}
+
+input[type="search"]::placeholder {
+  color: var(--text);
+  opacity: 0.4;
+}
+
+.results-count {
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.5;
+  margin-bottom: 8px;
+}
+
+.bookmark-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+
+.bookmark-item:hover {
+  background: var(--surface);
+}
+
+.bookmark-item.editing {
+  background: var(--surface);
+}
+
+.bookmark-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.bookmark-name {
+  color: var(--text-h);
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bookmark-name:hover {
+  text-decoration: underline;
+}
+
+.bookmark-meta {
+  display: flex;
+  gap: 8px;
+  margin-top: 1px;
+  font-size: 12px;
+}
+
+.bookmark-domain {
+  color: var(--text);
+  opacity: 0.6;
+}
+
+.bookmark-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.bookmark-item:hover .bookmark-actions {
+  opacity: 1;
+}
+
+.edit-btn, .delete-btn {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 16px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.edit-btn:hover {
+  color: var(--accent);
+}
+
+.delete-btn:hover {
+  color: var(--danger);
+}
+
+.edit-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edit-form input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text-h);
+  font-size: 13px;
+  font-family: var(--sans);
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.edit-form input:focus {
+  border-color: var(--accent);
+}
+
+.edit-form .edit-url {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.edit-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.save-btn, .cancel-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 14px;
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--sans);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.save-btn {
+  color: var(--accent);
+  border-color: rgba(124, 106, 239, 0.3);
+}
+
+.save-btn:hover {
+  background: rgba(124, 106, 239, 0.15);
+}
+
+.cancel-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text-h);
+}
+
+.empty {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--text);
+  opacity: 0.4;
+  font-size: 15px;
+}
+
+.nav-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+  margin-left: auto;
+}
+
+.nav-link:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --surface-hover: #f0f0f2;
+    --border: #e0e0e5;
+    --text: #6b6b80;
+    --text-h: #1a1a2e;
+    --accent: #6250d9;
+    --danger: #d04040;
+    --danger-dim: rgba(208, 64, 64, 0.1);
+  }
+}
