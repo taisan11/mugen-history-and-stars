@@ -54,7 +54,12 @@ const localOriginPattern = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
 const extensionOriginPattern = /^(?:chrome|moz)-extension:\/\/[a-z\d-]+$/i;
 
 function configuredOrigins(value: string | undefined): string[] {
-  return value?.split(",").map((origin) => origin.trim()).filter(Boolean) ?? [];
+  return (
+    value
+      ?.split(",")
+      .map((origin) => origin.trim())
+      .filter(Boolean) ?? []
+  );
 }
 
 function allowedOrigin(origin: string, configured: string[]): boolean {
@@ -83,7 +88,12 @@ function validPayload(kind: SyncKind, value: unknown): value is ChangePayload {
   if (!isRecord(value)) return false;
   if (!isBoundedString(value.url) || !isBoundedString(value.favicon)) return false;
   if (kind === "bookmark") {
-    return isBoundedString(value.name) && isTimestamp(value.createdAt);
+    return (
+      isBoundedString(value.name) &&
+      isTimestamp(value.createdAt) &&
+      typeof value.folder === "string" &&
+      value.folder.length <= MAX_STRING_LENGTH
+    );
   }
   return isBoundedString(value.title) && isTimestamp(value.visitedAt);
 }
@@ -103,7 +113,10 @@ function validateRequest(value: unknown): value is SyncRequest {
   if (!isBoundedString(value.deviceId) || !Array.isArray(value.changes)) return false;
   if (value.changes.length > MAX_CHANGES || !value.changes.every(validateChange)) return false;
   if (value.acknowledgedDeletionIds !== undefined) {
-    if (!Array.isArray(value.acknowledgedDeletionIds) || value.acknowledgedDeletionIds.length > MAX_RESPONSE_CHANGES) {
+    if (
+      !Array.isArray(value.acknowledgedDeletionIds) ||
+      value.acknowledgedDeletionIds.length > MAX_RESPONSE_CHANGES
+    ) {
       return false;
     }
     if (!value.acknowledgedDeletionIds.every(isTimestamp)) return false;
@@ -113,11 +126,15 @@ function validateRequest(value: unknown): value is SyncRequest {
 
 function isNewer(
   incoming: Pick<IncomingChange, "clientUpdatedAt" | "deviceId">,
-  current: Pick<typeof bookmarks.$inferSelect, "clientUpdatedAt" | "updatedBy"> | Pick<typeof deletionEvents.$inferSelect, "clientUpdatedAt" | "deviceId">,
+  current:
+    | Pick<typeof bookmarks.$inferSelect, "clientUpdatedAt" | "updatedBy">
+    | Pick<typeof deletionEvents.$inferSelect, "clientUpdatedAt" | "deviceId">,
 ): boolean {
   const currentDeviceId = "updatedBy" in current ? current.updatedBy : current.deviceId;
-  return incoming.clientUpdatedAt > current.clientUpdatedAt ||
-    (incoming.clientUpdatedAt === current.clientUpdatedAt && incoming.deviceId > currentDeviceId);
+  return (
+    incoming.clientUpdatedAt > current.clientUpdatedAt ||
+    (incoming.clientUpdatedAt === current.clientUpdatedAt && incoming.deviceId > currentDeviceId)
+  );
 }
 
 async function ensureUser(
@@ -127,12 +144,16 @@ async function ensureUser(
 ): Promise<typeof users.$inferSelect> {
   const existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
   if (!existing) {
-    return await db.insert(users).values({
-      id: userId,
-      registeredAt: Date.now(),
-      deviceIds: [deviceId],
-      revision: 0,
-    }).returning().get() as typeof users.$inferSelect;
+    return (await db
+      .insert(users)
+      .values({
+        id: userId,
+        registeredAt: Date.now(),
+        deviceIds: [deviceId],
+        revision: 0,
+      })
+      .returning()
+      .get()) as typeof users.$inferSelect;
   }
 
   const deviceIds = Array.isArray(existing.deviceIds) ? existing.deviceIds : [];
@@ -145,7 +166,8 @@ async function ensureUser(
 }
 
 async function nextRevision(db: ReturnType<typeof drizzle>, userId: string): Promise<number> {
-  const updated = await db.update(users)
+  const updated = await db
+    .update(users)
     .set({ revision: sql`${users.revision} + 1` })
     .where(eq(users.id, userId))
     .returning({ revision: users.revision })
@@ -160,9 +182,19 @@ async function currentItem(
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<typeof bookmarks.$inferSelect | typeof historyEntries.$inferSelect | undefined> {
   if (change.kind === "bookmark") {
-    return await db.select().from(bookmarks).where(and(eq(bookmarks.userId, userId), eq(bookmarks.itemId, change.itemId))).limit(1).get();
+    return await db
+      .select()
+      .from(bookmarks)
+      .where(and(eq(bookmarks.userId, userId), eq(bookmarks.itemId, change.itemId)))
+      .limit(1)
+      .get();
   }
-  return await db.select().from(historyEntries).where(and(eq(historyEntries.userId, userId), eq(historyEntries.itemId, change.itemId))).limit(1).get();
+  return await db
+    .select()
+    .from(historyEntries)
+    .where(and(eq(historyEntries.userId, userId), eq(historyEntries.itemId, change.itemId)))
+    .limit(1)
+    .get();
 }
 
 async function latestDeletion(
@@ -170,11 +202,19 @@ async function latestDeletion(
   userId: string,
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<typeof deletionEvents.$inferSelect | undefined> {
-  return await db.select().from(deletionEvents).where(and(
-    eq(deletionEvents.userId, userId),
-    eq(deletionEvents.kind, change.kind),
-    eq(deletionEvents.itemId, change.itemId),
-  )).orderBy(desc(deletionEvents.serverRevision)).limit(1).get();
+  return await db
+    .select()
+    .from(deletionEvents)
+    .where(
+      and(
+        eq(deletionEvents.userId, userId),
+        eq(deletionEvents.kind, change.kind),
+        eq(deletionEvents.itemId, change.itemId),
+      ),
+    )
+    .orderBy(desc(deletionEvents.serverRevision))
+    .limit(1)
+    .get();
 }
 
 async function recordDeletion(
@@ -185,15 +225,19 @@ async function recordDeletion(
   serverDeletedAt: number,
 ): Promise<number> {
   const serverRevision = await nextRevision(db, user.id);
-  const inserted = await db.insert(deletionEvents).values({
-    userId: user.id,
-    itemId: change.itemId,
-    kind: change.kind,
-    clientUpdatedAt: change.clientUpdatedAt,
-    deviceId: change.deviceId,
-    serverRevision,
-    serverDeletedAt,
-  }).returning({ id: deletionEvents.id }).get();
+  const inserted = await db
+    .insert(deletionEvents)
+    .values({
+      userId: user.id,
+      itemId: change.itemId,
+      kind: change.kind,
+      clientUpdatedAt: change.clientUpdatedAt,
+      deviceId: change.deviceId,
+      serverRevision,
+      serverDeletedAt,
+    })
+    .returning({ id: deletionEvents.id })
+    .get();
   if (!inserted) throw new Error("Deletion event could not be recorded");
 
   const targets = [...new Set(deviceIds)].map((deviceId) => ({
@@ -211,9 +255,15 @@ async function removeCurrentItem(
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<void> {
   if (change.kind === "bookmark") {
-    await db.delete(bookmarks).where(and(eq(bookmarks.userId, userId), eq(bookmarks.itemId, change.itemId))).run();
+    await db
+      .delete(bookmarks)
+      .where(and(eq(bookmarks.userId, userId), eq(bookmarks.itemId, change.itemId)))
+      .run();
   } else {
-    await db.delete(historyEntries).where(and(eq(historyEntries.userId, userId), eq(historyEntries.itemId, change.itemId))).run();
+    await db
+      .delete(historyEntries)
+      .where(and(eq(historyEntries.userId, userId), eq(historyEntries.itemId, change.itemId)))
+      .run();
   }
 }
 
@@ -226,7 +276,11 @@ async function applyDelete(
 ): Promise<void> {
   const current = await currentItem(db, user.id, change);
   const previousDeletion = await latestDeletion(db, user.id, change);
-  if ((current && !isNewer(change, current)) || (previousDeletion && !isNewer(change, previousDeletion))) return;
+  if (
+    (current && !isNewer(change, current)) ||
+    (previousDeletion && !isNewer(change, previousDeletion))
+  )
+    return;
 
   if (current) await removeCurrentItem(db, user.id, change);
   await recordDeletion(db, user, change, deviceIds, now);
@@ -242,29 +296,47 @@ async function applyUpsert(
   const payload = change.payload!;
   const current = await currentItem(db, user.id, change);
   const previousDeletion = await latestDeletion(db, user.id, change);
-  if ((current && !isNewer(change, current)) || (previousDeletion && !isNewer(change, previousDeletion))) return;
+  if (
+    (current && !isNewer(change, current)) ||
+    (previousDeletion && !isNewer(change, previousDeletion))
+  )
+    return;
 
   if (change.kind === "bookmark") {
     const url = payload.url as string;
-    const conflicting = await db.select().from(bookmarks).where(and(
-      eq(bookmarks.userId, user.id),
-      eq(bookmarks.url, url),
-    )).limit(1).get();
+    const conflicting = await db
+      .select()
+      .from(bookmarks)
+      .where(and(eq(bookmarks.userId, user.id), eq(bookmarks.url, url)))
+      .limit(1)
+      .get();
     if (conflicting && conflicting.itemId !== change.itemId) {
       if (!isNewer(change, conflicting)) {
-        await recordDeletion(db, user, {
-          ...change,
-          clientUpdatedAt: Math.max(change.clientUpdatedAt, conflicting.clientUpdatedAt) + 1,
-          deviceId: SERVER_DEVICE_ID,
-        }, deviceIds, now);
+        await recordDeletion(
+          db,
+          user,
+          {
+            ...change,
+            clientUpdatedAt: Math.max(change.clientUpdatedAt, conflicting.clientUpdatedAt) + 1,
+            deviceId: SERVER_DEVICE_ID,
+          },
+          deviceIds,
+          now,
+        );
         return;
       }
       await removeCurrentItem(db, user.id, { kind: "bookmark", itemId: conflicting.itemId });
-      await recordDeletion(db, user, {
-        ...change,
-        itemId: conflicting.itemId,
-        clientUpdatedAt: change.clientUpdatedAt,
-      }, deviceIds, now);
+      await recordDeletion(
+        db,
+        user,
+        {
+          ...change,
+          itemId: conflicting.itemId,
+          clientUpdatedAt: change.clientUpdatedAt,
+        },
+        deviceIds,
+        now,
+      );
     }
 
     const serverRevision = await nextRevision(db, user.id);
@@ -274,14 +346,20 @@ async function applyUpsert(
       url,
       name: payload.name as string,
       favicon: payload.favicon as string,
-      createdAt: current && "createdAt" in current ? current.createdAt : payload.createdAt as number,
+      folder: typeof payload.folder === "string" ? payload.folder : "",
+      createdAt:
+        current && "createdAt" in current ? current.createdAt : (payload.createdAt as number),
       serverRevision,
       serverUpdatedAt: now,
       clientUpdatedAt: change.clientUpdatedAt,
       updatedBy: change.deviceId,
     };
     if (current) {
-      await db.update(bookmarks).set(values).where(and(eq(bookmarks.userId, user.id), eq(bookmarks.itemId, change.itemId))).run();
+      await db
+        .update(bookmarks)
+        .set(values)
+        .where(and(eq(bookmarks.userId, user.id), eq(bookmarks.itemId, change.itemId)))
+        .run();
     } else {
       await db.insert(bookmarks).values(values).run();
     }
@@ -302,7 +380,11 @@ async function applyUpsert(
     updatedBy: change.deviceId,
   };
   if (current) {
-    await db.update(historyEntries).set(values).where(and(eq(historyEntries.userId, user.id), eq(historyEntries.itemId, change.itemId))).run();
+    await db
+      .update(historyEntries)
+      .set(values)
+      .where(and(eq(historyEntries.userId, user.id), eq(historyEntries.itemId, change.itemId)))
+      .run();
   } else {
     await db.insert(historyEntries).values(values).run();
   }
@@ -316,25 +398,42 @@ async function acknowledgeDeletions(
   now: number,
 ): Promise<void> {
   for (const deletionId of deletionIds) {
-    const event = await db.select({ id: deletionEvents.id }).from(deletionEvents).where(and(
-      eq(deletionEvents.id, deletionId),
-      eq(deletionEvents.userId, userId),
-    )).limit(1).get();
+    const event = await db
+      .select({ id: deletionEvents.id })
+      .from(deletionEvents)
+      .where(and(eq(deletionEvents.id, deletionId), eq(deletionEvents.userId, userId)))
+      .limit(1)
+      .get();
     if (!event) continue;
 
-    await db.update(deletionEventDevices).set({ acknowledgedAt: now }).where(and(
-      eq(deletionEventDevices.deletionId, deletionId),
-      eq(deletionEventDevices.deviceId, deviceId),
-      isNull(deletionEventDevices.acknowledgedAt),
-    )).run();
+    await db
+      .update(deletionEventDevices)
+      .set({ acknowledgedAt: now })
+      .where(
+        and(
+          eq(deletionEventDevices.deletionId, deletionId),
+          eq(deletionEventDevices.deviceId, deviceId),
+          isNull(deletionEventDevices.acknowledgedAt),
+        ),
+      )
+      .run();
 
-    const pending = await db.select({ deviceId: deletionEventDevices.deviceId })
+    const pending = await db
+      .select({ deviceId: deletionEventDevices.deviceId })
       .from(deletionEventDevices)
-      .where(and(eq(deletionEventDevices.deletionId, deletionId), isNull(deletionEventDevices.acknowledgedAt)))
+      .where(
+        and(
+          eq(deletionEventDevices.deletionId, deletionId),
+          isNull(deletionEventDevices.acknowledgedAt),
+        ),
+      )
       .limit(1)
       .get();
     if (!pending) {
-      await db.delete(deletionEventDevices).where(eq(deletionEventDevices.deletionId, deletionId)).run();
+      await db
+        .delete(deletionEventDevices)
+        .where(eq(deletionEventDevices.deletionId, deletionId))
+        .run();
       await db.delete(deletionEvents).where(eq(deletionEvents.id, deletionId)).run();
     }
   }
@@ -383,7 +482,8 @@ app.post("/v1/sync", async (c) => {
   }
 
   const body = await c.req.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) return c.json({ error: "request_too_large" }, 413);
+  if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES)
+    return c.json({ error: "request_too_large" }, 413);
 
   let payload: unknown;
   try {
@@ -398,14 +498,24 @@ app.post("/v1/sync", async (c) => {
   const user = await ensureUser(db, userId, payload.deviceId);
   const now = Date.now();
 
-  await acknowledgeDeletions(db, userId, payload.deviceId, payload.acknowledgedDeletionIds ?? [], now);
+  await acknowledgeDeletions(
+    db,
+    userId,
+    payload.deviceId,
+    payload.acknowledgedDeletionIds ?? [],
+    now,
+  );
 
   for (const change of payload.changes) {
-    const claimed = await db.insert(syncOperations).values({
-      userId,
-      operationId: change.operationId,
-      receivedAt: now,
-    }).onConflictDoNothing({ target: [syncOperations.userId, syncOperations.operationId] }).run();
+    const claimed = await db
+      .insert(syncOperations)
+      .values({
+        userId,
+        operationId: change.operationId,
+        receivedAt: now,
+      })
+      .onConflictDoNothing({ target: [syncOperations.userId, syncOperations.operationId] })
+      .run();
     if (claimed.meta.changes === 0) continue;
 
     if (change.operation === "delete") {
@@ -416,18 +526,27 @@ app.post("/v1/sync", async (c) => {
   }
 
   const cursor = payload.cursor ?? 0;
-  const bookmarkRows = await db.select().from(bookmarks).where(and(
-    eq(bookmarks.userId, userId),
-    gt(bookmarks.serverRevision, cursor),
-  )).orderBy(asc(bookmarks.serverRevision)).limit(MAX_RESPONSE_CHANGES).all();
-  const historyRows = await db.select().from(historyEntries).where(and(
-    eq(historyEntries.userId, userId),
-    gt(historyEntries.serverRevision, cursor),
-  )).orderBy(asc(historyEntries.serverRevision)).limit(MAX_RESPONSE_CHANGES).all();
-  const deletionRows = await db.select().from(deletionEvents).where(and(
-    eq(deletionEvents.userId, userId),
-    gt(deletionEvents.serverRevision, cursor),
-  )).orderBy(asc(deletionEvents.serverRevision)).limit(MAX_RESPONSE_CHANGES).all();
+  const bookmarkRows = await db
+    .select()
+    .from(bookmarks)
+    .where(and(eq(bookmarks.userId, userId), gt(bookmarks.serverRevision, cursor)))
+    .orderBy(asc(bookmarks.serverRevision))
+    .limit(MAX_RESPONSE_CHANGES)
+    .all();
+  const historyRows = await db
+    .select()
+    .from(historyEntries)
+    .where(and(eq(historyEntries.userId, userId), gt(historyEntries.serverRevision, cursor)))
+    .orderBy(asc(historyEntries.serverRevision))
+    .limit(MAX_RESPONSE_CHANGES)
+    .all();
+  const deletionRows = await db
+    .select()
+    .from(deletionEvents)
+    .where(and(eq(deletionEvents.userId, userId), gt(deletionEvents.serverRevision, cursor)))
+    .orderBy(asc(deletionEvents.serverRevision))
+    .limit(MAX_RESPONSE_CHANGES)
+    .all();
 
   const changes: OutgoingChange[] = [
     ...bookmarkRows.map((row) => ({
@@ -443,6 +562,7 @@ app.post("/v1/sync", async (c) => {
         url: row.url,
         name: row.name,
         favicon: row.favicon,
+        folder: row.folder,
         createdAt: row.createdAt,
       },
     })),
@@ -472,7 +592,9 @@ app.post("/v1/sync", async (c) => {
       deviceId: row.deviceId,
       deletionId: row.id,
     })),
-  ].sort((left, right) => left.serverRevision - right.serverRevision).slice(0, MAX_RESPONSE_CHANGES);
+  ]
+    .sort((left, right) => left.serverRevision - right.serverRevision)
+    .slice(0, MAX_RESPONSE_CHANGES);
 
   const nextCursor = changes.at(-1)?.serverRevision ?? cursor;
   return c.json({

@@ -2,17 +2,22 @@
   --bg: #0f0f13;
   --surface: #1a1a24;
   --surface-hover: #22222e;
+  --surface-hover: #22222e;
   --border: #2a2a38;
   --text: #a0a0b8;
   --text-h: #e8e8f0;
   --accent: #7c6aef;
   --danger: #e05555;
   --danger-dim: rgba(224, 85, 85, 0.15);
-  --sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --sans: "Inter", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
 
 body {
   font-family: var(--sans);
@@ -35,6 +40,22 @@ header {
   margin-bottom: 14px;
 }
 
+.nav-links {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 13px;
+}
+
+.nav-links a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.nav-links a:hover {
+  text-decoration: underline;
+}
+
 h1 {
   font-size: 20px;
   font-weight: 600;
@@ -46,6 +67,107 @@ h1 {
   font-size: 13px;
   color: var(--text);
   opacity: 0.6;
+}
+
+.bookmark-layout {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 18px;
+}
+
+.folder-panel {
+  align-self: start;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.folder-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.folder-heading h2 {
+  color: var(--text-h);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.folder-heading button,
+.remove-folder {
+  border: 0;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.folder-heading button {
+  font-size: 20px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.folder-heading button:hover,
+.remove-folder:hover {
+  color: var(--accent);
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.folder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.folder-btn:hover,
+.folder-btn.active {
+  background: var(--surface-hover);
+  color: var(--text-h);
+}
+
+.folder-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-count {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 12px;
+  opacity: 0.5;
+}
+
+.remove-folder {
+  padding: 3px 5px;
+  font-size: 14px;
+  opacity: 0;
+}
+
+.folder-row:hover .remove-folder {
+  opacity: 0.7;
+}
+
+.bookmark-content {
+  min-width: 0;
 }
 
 .toolbar {
@@ -141,7 +263,8 @@ input[type="search"]::placeholder {
   opacity: 1;
 }
 
-.edit-btn, .delete-btn {
+.edit-btn,
+.delete-btn {
   background: none;
   border: none;
   color: var(--text);
@@ -187,12 +310,27 @@ input[type="search"]::placeholder {
   font-size: 12px;
 }
 
+.edit-folder-label {
+  font-size: 12px;
+}
+
+.edit-folder {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-h);
+  font: inherit;
+}
+
 .edit-actions {
   display: flex;
   gap: 6px;
 }
 
-.save-btn, .cancel-btn {
+.save-btn,
+.cancel-btn {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -248,5 +386,21 @@ input[type="search"]::placeholder {
     --accent: #6250d9;
     --danger: #d04040;
     --danger-dim: rgba(208, 64, 64, 0.1);
+  }
+}
+
+@media (max-width: 600px) {
+  .bookmark-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .folder-panel {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 2px 8px;
+  }
+
+  .folder-heading {
+    grid-column: 1 / -1;
   }
 }

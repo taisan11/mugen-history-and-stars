@@ -35,7 +35,7 @@
 
     "@cloudflare/workerd-windows-64": ["@cloudflare/workerd-windows-64@1.20260811.1", "", { "os": "win32", "cpu": "x64" }, "sha512-g6VquwjASlYAibcNW/0E6Zszht4qLkmnXOGwIjjRHl2A0Qz48kVeMcGvyH6eA0G9U3OzZojjYFpP+YeyQmmdjw=="],
 
-    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20260815.1", "", {}, "sha512-btpW8rEgeJKcxDlBWKxzjLLUHxzUWqXZY8O+DmM6NcSHadUQN5I71z6Q/yAKCTJyGS7adBpXzlsZSFbosLnECQ=="],
+    "@cloudflare/workers-types": ["@cloudflare/workers-types@5.20260818.1", "", {}, "sha512-a89taQDbqb7Ni+xAVSsiOSd5wQPcbBJBnZgIG3EujVdDcdQkGVwab3xa2e9z29uqtMQb/P2gYDeDcNXcBRSWQQ=="],
 
     "@cspotcode/source-map-support": ["@cspotcode/source-map-support@0.8.1", "", { "dependencies": { "@jridgewell/trace-mapping": "0.3.9" } }, "sha512-IchNf6dN4tHoMFIn/7OE8LWZ19Y6q/67Bmf6vnGREv8RSbBVb9LPJxEcnwrcwX6ixSvaiGoomAUvu4YSxXrVgw=="],
 
@@ -277,7 +277,7 @@
 
     "@speed-highlight/core": ["@speed-highlight/core@1.2.24", "", {}, "sha512-qeW2e1l78afw8VhRPfPQ1Gjj+KU5XFQ/OFV5ti6eTa9bruO7mJyZtA4vw0ofqmA3tKCkROE9xLk3VZoeRc98nw=="],
 
-    "@taisan11/vite-plugin-webext": ["@taisan11/vite-plugin-webext@0.6.0", "", { "dependencies": { "@types/firefox-webext-browser": "^143.0.0", "@zip.js/zip.js": "^2.8.31", "magic-string": "^1.0.0" }, "peerDependencies": { "typescript": "^7.0.2" }, "bin": { "vite-plugin-webext": "dist/cli.mjs" } }, "sha512-PXjbWJ07NuUmbtikcvyvbrS7NAq4eS+NrRTSlA8oISZ3m29VvHb/HAa021hEoFSSezqitQCjxqXTmpVGzhBbqQ=="],
+    "@taisan11/vite-plugin-webext": ["@taisan11/vite-plugin-webext@0.6.1", "", { "dependencies": { "@types/firefox-webext-browser": "^143.0.0", "@zip.js/zip.js": "^2.8.31", "magic-string": "^1.0.0" }, "peerDependencies": { "typescript": "^7.0.2" }, "bin": { "vite-plugin-webext": "dist/cli.mjs" } }, "sha512-w9Wc7pMcfbrR+H6CPtZxK61Ca2W2XQJ1oGya6VyiTGtAtbU7XgVuTy8qtq2enVGnlkGTm0oYd37Fw47HmP+jXQ=="],
 
     "@types/firefox-webext-browser": ["@types/firefox-webext-browser@143.0.0", "", {}, "sha512-865dYKMOP0CllFyHmgXV4IQgVL51OSQQCwSoihQ17EwugePKFSAZRc0EI+y7Ly4q7j5KyURlA7LgRpFieO4JOw=="],
 

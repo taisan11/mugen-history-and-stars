@@ -4,6 +4,7 @@ CREATE TABLE `bookmarks` (
 	`url` text NOT NULL,
 	`name` text NOT NULL,
 	`favicon` text NOT NULL,
+	`folder` text DEFAULT '' NOT NULL,
 	`created_at` integer NOT NULL,
 	`server_revision` integer NOT NULL,
 	`server_updated_at` integer NOT NULL,

@@ -81,28 +81,19 @@
       "indexes": {
         "bookmarks_user_url_unique": {
           "name": "bookmarks_user_url_unique",
-          "columns": [
-            "user_id",
-            "url"
-          ],
+          "columns": ["user_id", "url"],
           "isUnique": true
         },
         "bookmarks_user_updated_idx": {
           "name": "bookmarks_user_updated_idx",
-          "columns": [
-            "user_id",
-            "server_revision"
-          ],
+          "columns": ["user_id", "server_revision"],
           "isUnique": false
         }
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "bookmarks_user_id_item_id_pk": {
-          "columns": [
-            "user_id",
-            "item_id"
-          ],
+          "columns": ["user_id", "item_id"],
           "name": "bookmarks_user_id_item_id_pk"
         }
       },
@@ -137,19 +128,14 @@
       "indexes": {
         "deletion_event_devices_device_idx": {
           "name": "deletion_event_devices_device_idx",
-          "columns": [
-            "device_id"
-          ],
+          "columns": ["device_id"],
           "isUnique": false
         }
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "deletion_event_devices_deletion_id_device_id_pk": {
-          "columns": [
-            "deletion_id",
-            "device_id"
-          ],
+          "columns": ["deletion_id", "device_id"],
           "name": "deletion_event_devices_deletion_id_device_id_pk"
         }
       },
@@ -219,19 +205,12 @@
       "indexes": {
         "deletion_events_user_deleted_idx": {
           "name": "deletion_events_user_deleted_idx",
-          "columns": [
-            "user_id",
-            "server_revision"
-          ],
+          "columns": ["user_id", "server_revision"],
           "isUnique": false
         },
         "deletion_events_user_item_idx": {
           "name": "deletion_events_user_item_idx",
-          "columns": [
-            "user_id",
-            "kind",
-            "item_id"
-          ],
+          "columns": ["user_id", "kind", "item_id"],
           "isUnique": false
         }
       },
@@ -317,20 +296,14 @@
       "indexes": {
         "history_entries_user_updated_idx": {
           "name": "history_entries_user_updated_idx",
-          "columns": [
-            "user_id",
-            "server_revision"
-          ],
+          "columns": ["user_id", "server_revision"],
           "isUnique": false
         }
       },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "history_entries_user_id_item_id_pk": {
-          "columns": [
-            "user_id",
-            "item_id"
-          ],
+          "columns": ["user_id", "item_id"],
           "name": "history_entries_user_id_item_id_pk"
         }
       },
@@ -366,10 +339,7 @@
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "sync_operations_user_id_operation_id_pk": {
-          "columns": [
-            "user_id",
-            "operation_id"
-          ],
+          "columns": ["user_id", "operation_id"],
           "name": "sync_operations_user_id_operation_id_pk"
         }
       },

@@ -5,11 +5,17 @@
   --text: #a0a0b8;
   --text-h: #e8e8f0;
   --accent: #7c6aef;
-  --sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --danger: #e05555;
+  --danger-dim: rgba(224, 85, 85, 0.15);
+  --sans: "Inter", system-ui, -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
 }
 
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
 
 body {
   font-family: var(--sans);
@@ -32,13 +38,33 @@ h1 {
   margin-bottom: 24px;
 }
 
+.page-nav {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+
+.page-nav a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.page-nav a:hover,
+.page-nav a[aria-current="page"] {
+  color: var(--accent);
+}
+
 .setting {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.bookmark-import-setting {
+.backup-setting,
+.reset-setting,
+.bookmark-import-setting,
+.history-import-setting {
   margin-top: 24px;
   padding-top: 20px;
   border-top: 1px solid var(--border);
@@ -89,15 +115,23 @@ input[type="text"]:focus {
   border-color: var(--accent);
 }
 
-input[type="url"] { width: 100%; }
-input[type="password"], input[type="text"] { width: 100%; }
+input[type="url"] {
+  width: 100%;
+}
+input[type="password"],
+input[type="text"] {
+  width: 100%;
+}
 
-.secret-row, .sync-actions {
+.secret-row,
+.sync-actions {
   display: flex;
   gap: 8px;
 }
 
-.sync-actions { margin-top: 4px; }
+.sync-actions {
+  margin-top: 4px;
+}
 
 button {
   align-self: flex-start;
@@ -122,6 +156,15 @@ button:disabled {
   cursor: wait;
 }
 
+button.danger {
+  color: var(--danger);
+  border-color: rgba(224, 85, 85, 0.3);
+}
+
+button.danger:hover {
+  background: var(--danger-dim);
+}
+
 #status {
   margin-top: 12px;
   font-size: 13px;
@@ -129,6 +172,27 @@ button:disabled {
 }
 
 #import-status {
+  min-height: 19px;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+#backup-status {
+  min-height: 19px;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+#reset-status {
+  min-height: 19px;
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+#history-import-status {
   min-height: 19px;
   margin-top: 2px;
   font-size: 13px;
@@ -150,6 +214,8 @@ button:disabled {
     --text: #6b6b80;
     --text-h: #1a1a2e;
     --accent: #6250d9;
+    --danger: #d04040;
+    --danger-dim: rgba(208, 64, 64, 0.1);
     --surface-hover: #f0f0f2;
   }
 }

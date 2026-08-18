@@ -1,7 +1,7 @@
 {
   "name": "mugen-history-and-stars",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,18 +10,18 @@
     "db:gen": "drizzle-kit generate",
     "db:mg": "wrangler d1 migrations apply DB"
   },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.2"
+  },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260815.1",
-    "@taisan11/vite-plugin-webext": "^0.6.0",
+    "@cloudflare/workers-types": "^5.20260818.1",
+    "@taisan11/vite-plugin-webext": "^0.6.1",
     "drizzle-kit": "^0.31.10",
     "oxfmt": "^0.63.0",
     "oxlint": "^1.78.0",
     "typescript": "~7.0.2",
     "vite": "^8.2.1",
     "wrangler": "^4.123.0"
-  },
-  "dependencies": {
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.2"
   }
 }
