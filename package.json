@@ -3,25 +3,20 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "workspaces": ["extension", "server"],
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "db:gen": "drizzle-kit generate",
-    "db:mg": "wrangler d1 migrations apply DB"
-  },
-  "dependencies": {
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.8"
+    "dev": "bun run --filter '@mugen-history-and-stars/server' dev",
+    "dev:extension": "bun run --filter '@mugen-history-and-stars/extension' dev",
+    "build": "bun run build:extension && bun run build:server",
+    "build:extension": "bun run --filter '@mugen-history-and-stars/extension' build",
+    "build:server": "bun run --filter '@mugen-history-and-stars/server' build",
+    "preview": "bun run --filter '@mugen-history-and-stars/server' preview",
+    "db:gen": "bun run --filter '@mugen-history-and-stars/server' db:gen",
+    "db:mg": "bun run --filter '@mugen-history-and-stars/server' db:mg"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260917.1",
-    "@taisan11/vite-plugin-webext": "^0.6.1",
-    "drizzle-kit": "^0.31.10",
     "oxfmt": "^0.68.0",
     "oxlint": "^1.83.0",
-    "typescript": "~7.0.2",
-    "vite": "^8.3.0",
-    "wrangler": "^4.133.0"
+    "typescript": "~7.0.2"
   }
 }

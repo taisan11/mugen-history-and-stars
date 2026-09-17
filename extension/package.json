@@ -1,0 +1,15 @@
+{
+  "name": "@mugen-history-and-stars/extension",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@taisan11/vite-plugin-webext": "^0.6.1",
+    "vite": "^8.3.0"
+  }
+}

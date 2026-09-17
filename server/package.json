@@ -1,0 +1,27 @@
+{
+  "name": "@mugen-history-and-stars/server",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && wrangler deploy",
+    "db:gen": "drizzle-kit generate --config drizzle.config.ts",
+    "db:mg": "wrangler d1 migrations apply DB"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.8",
+    "solid-js": "^1.9.9"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.20.0",
+    "@cloudflare/workers-types": "^5.20260917.1",
+    "drizzle-kit": "^0.31.10",
+    "vite-plugin-solid": "^2.11.9",
+    "vite": "^8.3.0",
+    "wrangler": "^4.133.0"
+  }
+}

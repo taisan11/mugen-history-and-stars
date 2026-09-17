@@ -371,8 +371,8 @@ browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const bookmarked = await toggleBookmarkInDb({
         url,
-        name: msg.title ?? ((metadata?.url === url ? metadata.title : "") || url),
-        favicon: msg.favicon ?? (metadata?.url === url ? metadata.favicon : ""),
+        name: msg.title ?? ((metadata?.url === url ? metadata?.title : "") || url),
+        favicon: msg.favicon ?? (metadata?.url === url ? metadata?.favicon : ""),
         folder: "",
       });
       omniboxCache = undefined;
