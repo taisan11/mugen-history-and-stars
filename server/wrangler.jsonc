@@ -10,6 +10,12 @@
 		"enabled": true,
 		"head_sampling_rate": 1,
 	},
+ "routes": [
+    {
+      "pattern": "paxiv.taisan11.dev",
+      "custom_domain": true
+    }
+  ],
 	"ratelimits": [
 		{
 			"name": "SYNC_RATE_LIMITER",
