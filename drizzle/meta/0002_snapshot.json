@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5b71af21-a052-4ab1-8c5c-5eb8c984fc82",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "379a4e21-1dc3-4bc0-9de3-4cc5b7f2bde7",
+  "prevId": "546d5458-2dab-4110-b84b-87873793959f",
   "tables": {
     "bookmarks": {
       "name": "bookmarks",
@@ -345,6 +345,51 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "plans": {
+      "name": "plans",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_bookmarks": {
+          "name": "max_bookmarks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_history_entries": {
+          "name": "max_history_entries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_devices": {
+          "name": "max_devices",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "operation_retention_days": {
+          "name": "operation_retention_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "sync_operations": {
       "name": "sync_operations",
       "columns": {
@@ -370,7 +415,16 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "sync_operations_user_received_idx": {
+          "name": "sync_operations_user_received_idx",
+          "columns": [
+            "user_id",
+            "received_at"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {
         "sync_operations_user_id_operation_id_pk": {
@@ -407,6 +461,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'free'"
         },
         "revision": {
           "name": "revision",

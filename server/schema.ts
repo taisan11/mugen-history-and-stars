@@ -11,7 +11,16 @@ export const users = sqliteTable("users", {
   id: text("id").primaryKey(),
   registeredAt: integer("registered_at").notNull(),
   deviceIds: text("device_ids", { mode: "json" }).$type<string[]>().notNull(),
+  planId: text("plan_id").notNull().default("free"),
   revision: integer("revision").notNull().default(0),
+});
+
+export const plans = sqliteTable("plans", {
+  id: text("id").primaryKey(),
+  maxBookmarks: integer("max_bookmarks").notNull(),
+  maxHistoryEntries: integer("max_history_entries").notNull(),
+  maxDevices: integer("max_devices").notNull(),
+  operationRetentionDays: integer("operation_retention_days").notNull(),
 });
 
 export const bookmarks = sqliteTable(
@@ -102,10 +111,15 @@ export const syncOperations = sqliteTable(
   },
   (table) => ({
     pk: primaryKey({ columns: [table.userId, table.operationId] }),
+    userReceivedIdx: index("sync_operations_user_received_idx").on(
+      table.userId,
+      table.receivedAt,
+    ),
   }),
 );
 
 export type User = typeof users.$inferSelect;
+export type Plan = typeof plans.$inferSelect;
 export type Bookmark = typeof bookmarks.$inferSelect;
 export type HistoryEntry = typeof historyEntries.$inferSelect;
 export type DeletionEvent = typeof deletionEvents.$inferSelect;

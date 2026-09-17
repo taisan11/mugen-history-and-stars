@@ -1,6 +1,13 @@
 /// <reference types="@taisan11/vite-plugin-webext/types" />
 
-import { addVisit, isBookmarked, addBookmark, removeBookmark, getBookmarkByUrl } from "./db.ts";
+import {
+  addVisit,
+  getAllBookmarks,
+  toggleBookmark as toggleBookmarkInDb,
+  getBookmarkByUrl,
+  updateVisitMetadata,
+  type BookmarkEntry,
+} from "./db.ts";
 import { syncNow, type SyncResult } from "./sync.ts";
 // import { extensionApi } from "./extension-api.ts";
 
@@ -37,12 +44,33 @@ function scheduleSync(): Promise<SyncResult> {
   return promise;
 }
 
+function scheduleSyncInBackground(): void {
+  void scheduleSync().catch((error: unknown) => console.error("Scheduled sync failed", error));
+}
+
 type ActionTab = {
   id?: number;
   url?: string;
   title?: string;
   favIconUrl?: string;
 };
+
+type PageMetadataMessage = {
+  type: "PAGE_METADATA";
+  url: string;
+  title?: string;
+  favicon?: string;
+  navigation?: boolean;
+};
+
+// This is only a fast-path to distinguish a SPA route transition from the
+// initial metadata message. The database remains the source of truth, so a
+// service-worker restart does not lose title updates.
+const tabUrls = new Map<number, string>();
+const tabMetadata = new Map<number, { url: string; title: string; favicon: string }>();
+const MAX_OMNIBOX_SUGGESTIONS = 6;
+let omniboxRequestId = 0;
+let omniboxCache: { items: BookmarkEntry[]; expiresAt: number } | undefined;
 
 async function loadActionIcon(path: string): Promise<ImageData> {
   const response = await fetch(browser.runtime.getURL(path));
@@ -89,7 +117,7 @@ async function hidePageAction(tabId: number) {
 }
 
 async function updatePageAction(tabId: number, url: string) {
-  const bookmarked = await isBookmarked(url);
+  const bookmarked = (await getBookmarkByUrl(url)) !== undefined;
   await setBookmarkActionIcon(tabId, bookmarked);
   if (IS_FIREFOX) await browser.pageAction.show(tabId);
 }
@@ -103,6 +131,154 @@ async function updatePageActionForTab(tab: ActionTab) {
   await updatePageAction(tab.id, tab.url);
 }
 
+function isPageMetadataMessage(value: unknown): value is PageMetadataMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const message = value as Partial<PageMetadataMessage>;
+  return (
+    message.type === "PAGE_METADATA" &&
+    typeof message.url === "string" &&
+    typeof message.title === "string" &&
+    typeof message.favicon === "string" &&
+    (message.navigation === undefined || typeof message.navigation === "boolean")
+  );
+}
+
+function escapeOmnibox(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => {
+    switch (character) {
+      case "&":
+        return "&amp;";
+      case "<":
+        return "&lt;";
+      case ">":
+        return "&gt;";
+      case '"':
+        return "&quot;";
+      default:
+        return "&#39;";
+    }
+  });
+}
+
+async function getOmniboxBookmarks(): Promise<BookmarkEntry[]> {
+  if (omniboxCache && omniboxCache.expiresAt > Date.now()) return omniboxCache.items;
+  const items = await getAllBookmarks();
+  omniboxCache = { items, expiresAt: Date.now() + 1_000 };
+  return items;
+}
+
+function bookmarkMatches(bookmark: BookmarkEntry, query: string): boolean {
+  return (
+    bookmark.name.toLowerCase().includes(query) ||
+    bookmark.url.toLowerCase().includes(query) ||
+    bookmark.folder.toLowerCase().includes(query)
+  );
+}
+
+function bookmarkDescription(bookmark: BookmarkEntry): string {
+  let host = bookmark.url;
+  try {
+    host = new URL(bookmark.url).hostname;
+  } catch {
+    // Keep the original value for non-standard bookmark URLs.
+  }
+  return `${escapeOmnibox(bookmark.name || bookmark.url)} <dim>${escapeOmnibox(host)}</dim>`;
+}
+
+function updateOmniboxSuggestions(
+  text: string,
+  suggest: (results: browser.omnibox.SuggestResult[]) => void,
+) {
+  const requestId = ++omniboxRequestId;
+  const query = text.trim().toLowerCase();
+  void getOmniboxBookmarks()
+    .then((bookmarks) => {
+      if (requestId !== omniboxRequestId) return;
+      suggest(
+        bookmarks
+          .filter((bookmark) => !query || bookmarkMatches(bookmark, query))
+          .slice(0, MAX_OMNIBOX_SUGGESTIONS)
+          .map((bookmark) => ({
+            content: bookmark.url,
+            description: bookmarkDescription(bookmark),
+          })),
+      );
+    })
+    .catch(() => {
+      if (requestId === omniboxRequestId) suggest([]);
+    });
+}
+
+async function openOmniboxResult(
+  text: string,
+  disposition: browser.omnibox.OnInputEnteredDisposition,
+): Promise<void> {
+  let url = text.trim();
+  if (!ALLOWED_SCHEMES.some((scheme) => url.toLowerCase().startsWith(scheme))) {
+    const bookmark = (await getOmniboxBookmarks()).find((item) =>
+      bookmarkMatches(item, url.toLowerCase()),
+    );
+    if (!bookmark) return;
+    url = bookmark.url;
+  }
+  if (!ALLOWED_SCHEMES.some((scheme) => url.toLowerCase().startsWith(scheme))) return;
+  if (disposition === "currentTab") {
+    const [activeTab] = await browser.tabs.query({ active: true, currentWindow: true });
+    if (activeTab?.id !== undefined) await browser.tabs.update(activeTab.id, { url });
+    return;
+  }
+  await browser.tabs.create({ url, active: disposition === "newForegroundTab" });
+}
+
+async function saveVisitFromTab(tabId: number, tab: ActionTab): Promise<void> {
+  if (!tab.url || !ALLOWED_SCHEMES.some((scheme) => tab.url!.startsWith(scheme))) return;
+  await addVisit({
+    url: tab.url,
+    title: tab.title?.trim() ?? "",
+    favicon: tab.favIconUrl ?? "",
+    visitedAt: Date.now(),
+  });
+  tabUrls.set(tabId, tab.url);
+  tabMetadata.set(tabId, {
+    url: tab.url,
+    title: tab.title?.trim() ?? "",
+    favicon: tab.favIconUrl ?? "",
+  });
+}
+
+async function handlePageMetadata(
+  message: PageMetadataMessage,
+  sender: browser.runtime.MessageSender,
+) {
+  const tabId = sender.tab?.id;
+  if (tabId === undefined || !ALLOWED_SCHEMES.some((scheme) => message.url.startsWith(scheme)))
+    return;
+
+  const title = message.title?.trim() ?? "";
+  const favicon = message.favicon?.trim() ?? "";
+  const previousUrl = tabUrls.get(tabId);
+  if (message.navigation === true && previousUrl !== message.url) {
+    await addVisit({ url: message.url, title, favicon, visitedAt: Date.now() });
+    tabUrls.set(tabId, message.url);
+    tabMetadata.set(tabId, { url: message.url, title, favicon });
+    scheduleSyncInBackground();
+    return;
+  }
+
+  // Initial content-script metadata arrives after tabs.onUpdated. If the
+  // worker restarted, updateVisitMetadata can still find the existing visit;
+  // only create a new visit when no record exists yet.
+  const metadataResult = await updateVisitMetadata(message.url, { title, favicon });
+  if (metadataResult === "missing") {
+    await addVisit({ url: message.url, title, favicon, visitedAt: Date.now() });
+    scheduleSyncInBackground();
+  } else if (metadataResult === "updated") {
+    scheduleSyncInBackground();
+  }
+  tabUrls.set(tabId, message.url);
+  tabMetadata.set(tabId, { url: message.url, title, favicon });
+}
+
 browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   if (!tab.url || !ALLOWED_SCHEMES.some((s) => tab.url!.startsWith(s))) {
     await hidePageAction(tabId);
@@ -110,18 +286,27 @@ browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 
   if (changeInfo.status === "complete") {
-    await addVisit({
+    await saveVisitFromTab(tabId, tab);
+    scheduleSyncInBackground();
+  } else if (changeInfo.title !== undefined) {
+    const metadataResult = await updateVisitMetadata(tab.url, { title: changeInfo.title });
+    const metadata = tabMetadata.get(tabId);
+    tabMetadata.set(tabId, {
       url: tab.url,
-      title: tab.title ?? "",
-      favicon: tab.favIconUrl ?? "",
-      visitedAt: Date.now(),
+      title: changeInfo.title.trim(),
+      favicon: metadata?.url === tab.url ? metadata.favicon : (tab.favIconUrl ?? ""),
     });
-    void scheduleSync().catch((error: unknown) => console.error("Scheduled sync failed", error));
+    if (metadataResult === "updated") scheduleSyncInBackground();
   }
 
   if (tab.url && (changeInfo.url || changeInfo.status === "complete")) {
     await updatePageAction(tabId, tab.url);
   }
+});
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  tabUrls.delete(tabId);
+  tabMetadata.delete(tabId);
 });
 
 browser.tabs.onActivated.addListener(async (activeInfo) => {
@@ -137,21 +322,14 @@ async function toggleBookmark(tab: ActionTab) {
   if (tab.id === undefined || !tab.url || !ALLOWED_SCHEMES.some((s) => tab.url!.startsWith(s)))
     return;
   const url = tab.url;
-  const bookmarked = await isBookmarked(url);
-  if (bookmarked) {
-    const existing = await getBookmarkByUrl(url);
-    if (existing?.id) await removeBookmark(existing.id);
-    await setBookmarkActionIcon(tab.id, false);
-  } else {
-    await addBookmark({
-      url,
-      name: tab.title ?? url,
-      favicon: tab.favIconUrl ?? "",
-      folder: "",
-    });
-    await setBookmarkActionIcon(tab.id, true);
-  }
-  void scheduleSync().catch((error: unknown) => console.error("Scheduled sync failed", error));
+  const metadata = tabMetadata.get(tab.id);
+  const title = metadata?.url === url && metadata.title ? metadata.title : (tab.title ?? "");
+  const favicon =
+    metadata?.url === url && metadata.favicon ? metadata.favicon : (tab.favIconUrl ?? "");
+  const bookmarked = await toggleBookmarkInDb({ url, name: title || url, favicon, folder: "" });
+  omniboxCache = undefined;
+  await setBookmarkActionIcon(tab.id, bookmarked);
+  scheduleSyncInBackground();
 }
 
 if (IS_FIREFOX) {
@@ -161,25 +339,50 @@ if (IS_FIREFOX) {
   browser.action.onClicked.addListener(toggleBookmark);
 }
 
-browser.runtime.onMessage.addListener((msg, sender) => {
+browser.omnibox.onInputStarted.addListener(() => {
+  browser.omnibox.setDefaultSuggestion({
+    description: "ブックマークを検索（名前・URL・フォルダ）",
+  });
+});
+browser.omnibox.onInputChanged.addListener(updateOmniboxSuggestions);
+browser.omnibox.onInputCancelled.addListener(() => {
+  omniboxRequestId++;
+});
+browser.omnibox.onInputEntered.addListener((text, disposition) => {
+  void openOmniboxResult(text, disposition).catch((error: unknown) =>
+    console.error("Failed to open omnibox bookmark", error),
+  );
+});
+
+browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (isPageMetadataMessage(msg)) {
+    void handlePageMetadata(msg, sender).then(
+      () => sendResponse({ ok: true }),
+      (error: unknown) => {
+        console.error("Failed to save page metadata", error);
+        sendResponse({ ok: false });
+      },
+    );
+    return true;
+  }
   if (msg.type === "TOGGLE_BOOKMARK" && sender.tab?.url && sender.tab?.id) {
     const url = msg.url ?? sender.tab.url;
+    const metadata = tabMetadata.get(sender.tab.id);
     (async () => {
-      const bookmarked = await isBookmarked(url);
-      if (bookmarked) {
-        const existing = await getBookmarkByUrl(url);
-        if (existing?.id) await removeBookmark(existing.id);
-        await setBookmarkActionIcon(sender.tab!.id!, false);
-      } else {
-        await addBookmark({ url, name: msg.title ?? url, favicon: msg.favicon ?? "", folder: "" });
-        await setBookmarkActionIcon(sender.tab!.id!, true);
-      }
-      void scheduleSync().catch((error: unknown) => console.error("Scheduled sync failed", error));
+      const bookmarked = await toggleBookmarkInDb({
+        url,
+        name: msg.title ?? ((metadata?.url === url ? metadata.title : "") || url),
+        favicon: msg.favicon ?? (metadata?.url === url ? metadata.favicon : ""),
+        folder: "",
+      });
+      omniboxCache = undefined;
+      await setBookmarkActionIcon(sender.tab!.id!, bookmarked);
+      scheduleSyncInBackground();
     })();
     return true;
   }
   if (msg.type === "GET_BOOKMARK_STATUS") {
-    return isBookmarked(msg.url);
+    return getBookmarkByUrl(msg.url).then((bookmark) => bookmark !== undefined);
   }
   if (msg.type === "GET_BOOKMARK") {
     return getBookmarkByUrl(msg.url);

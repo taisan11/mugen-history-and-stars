@@ -136,6 +136,8 @@ button.danger:hover {
   border-radius: 8px;
   transition: background 0.15s;
   position: relative;
+  content-visibility: auto;
+  contain-intrinsic-size: 56px;
 }
 
 .visit-item:hover {

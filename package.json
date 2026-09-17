@@ -12,16 +12,16 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.2"
+    "hono": "^4.13.8"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20260818.1",
+    "@cloudflare/workers-types": "^5.20260917.1",
     "@taisan11/vite-plugin-webext": "^0.6.1",
     "drizzle-kit": "^0.31.10",
-    "oxfmt": "^0.63.0",
-    "oxlint": "^1.78.0",
+    "oxfmt": "^0.68.0",
+    "oxlint": "^1.83.0",
     "typescript": "~7.0.2",
-    "vite": "^8.2.1",
-    "wrangler": "^4.123.0"
+    "vite": "^8.3.0",
+    "wrangler": "^4.133.0"
   }
 }

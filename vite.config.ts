@@ -16,6 +16,16 @@ export default defineConfig({
             : { scripts: ["src/background.ts"], type: "module" },
         permissions: ["tabs", "storage", "bookmarks", "history"],
         host_permissions: ["http://*/*", "https://*/*"],
+        omnibox: { keyword: "bm" },
+        content_scripts: [
+          {
+            matches: ["http://*/*", "https://*/*"],
+            js: ["src/content.ts"],
+            // Install early so title updates during an SPA's initial render
+            // are observed; later route changes are handled by history events.
+            run_at: "document_start",
+          },
+        ],
         options_page: "src/options/index.html",
         action: {
           default_title: browser === "chrome" ? "ブックマーク" : "履歴",
@@ -56,9 +66,9 @@ export default defineConfig({
   build: {
     rolldownOptions: {
       input: {
-        history: resolve(__dirname, "src/history/index.html"),
-        options: resolve(__dirname, "src/options/index.html"),
-        bookmarks: resolve(__dirname, "src/bookmarks/index.html"),
+        history: resolve(import.meta.dirname, "src/history/index.html"),
+        options: resolve(import.meta.dirname, "src/options/index.html"),
+        bookmarks: resolve(import.meta.dirname, "src/bookmarks/index.html"),
       },
     },
   },

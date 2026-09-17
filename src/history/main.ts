@@ -10,7 +10,8 @@ import {
 import { requestSync } from "../sync.ts";
 // import { extensionApi } from "../extension-api.ts";
 
-const DEFAULT_PER_PAGE = 500;
+const DEFAULT_PER_PAGE = 200;
+const MAX_PER_PAGE = 2_000;
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
@@ -19,6 +20,10 @@ let perPage = DEFAULT_PER_PAGE;
 let totalCount = 0;
 let searchQuery = "";
 let currentItems: HistoryEntry[] = [];
+
+type HistoryRow =
+  | { kind: "date"; key: string; date: string; count: number }
+  | { kind: "visit"; key: string; entry: HistoryEntry };
 
 function formatDate(ts: number): string {
   const d = new Date(ts);
@@ -73,40 +78,48 @@ function escapeHtml(s: string): string {
   return div.innerHTML;
 }
 
-function render() {
-  const totalPages = Math.ceil(totalCount / perPage);
-  const groups = groupByDate(currentItems);
+function buildHistoryRows(entries: HistoryEntry[]): HistoryRow[] {
+  const rows: HistoryRow[] = [];
+  for (const [date, dateEntries] of groupByDate(entries)) {
+    rows.push({ kind: "date", key: `date:${date}`, date, count: dateEntries.length });
+    for (const entry of dateEntries) {
+      rows.push({
+        kind: "visit",
+        key: `visit:${entry.id ?? `${entry.url}:${entry.visitedAt}`}`,
+        entry,
+      });
+    }
+  }
+  return rows;
+}
 
-  let groupsHtml = "";
-  for (const [date, entries] of groups) {
-    const items = entries
-      .map(
-        (e) => `
-      <div class="visit-item" data-id="${e.id}">
-        <div class="visit-info">
-          <a class="visit-title" href="${escapeHtml(e.url)}" target="_blank">${escapeHtml(e.title || getDomain(e.url))}</a>
-          <div class="visit-meta">
-            <span class="visit-domain">${escapeHtml(getDomain(e.url))}</span>
-            <span class="visit-time">${formatDate(e.visitedAt)}</span>
-          </div>
-        </div>
-        <button class="delete-btn" data-id="${e.id}" title="削除">×</button>
-      </div>
-    `,
-      )
-      .join("");
-
-    groupsHtml += `
+function renderHistoryRow(row: HistoryRow): string {
+  if (row.kind === "date") {
+    return `
       <div class="date-group">
-        <div class="date-header">${date} (${entries.length})</div>
-        ${items}
+        <div class="date-header">${escapeHtml(row.date)} (${row.count})</div>
       </div>
     `;
   }
 
-  if (currentItems.length === 0) {
-    groupsHtml = `<div class="empty">${searchQuery ? "検索結果がありません" : "履歴がまだありません"}</div>`;
-  }
+  const entry = row.entry;
+  return `
+    <div class="visit-item" data-id="${entry.id}">
+      <div class="visit-info">
+        <a class="visit-title" href="${escapeHtml(entry.url)}" target="_blank">${escapeHtml(entry.title || getDomain(entry.url))}</a>
+        <div class="visit-meta">
+          <span class="visit-domain">${escapeHtml(getDomain(entry.url))}</span>
+          <span class="visit-time">${formatDate(entry.visitedAt)}</span>
+        </div>
+      </div>
+      <button class="delete-btn" data-id="${entry.id}" title="削除">×</button>
+    </div>
+  `;
+}
+
+function render() {
+  const totalPages = Math.ceil(totalCount / perPage);
+  const rows = buildHistoryRows(currentItems);
 
   let paginationHtml = "";
   if (totalPages > 1) {
@@ -139,16 +152,20 @@ function render() {
       <input type="search" id="search" placeholder="URL・タイトルで検索..." value="${escapeHtml(searchQuery)}" autofocus />
       <button id="clear-all" class="danger">全削除</button>
     </div>
-    <div class="results-count">${currentPage * perPage + 1}〜${Math.min((currentPage + 1) * perPage, totalCount)} / ${totalCount.toLocaleString()} 件</div>
-    <div id="history-list">${groupsHtml}</div>
+    <div class="results-count">${totalCount === 0 ? "0" : `${currentPage * perPage + 1}〜${Math.min((currentPage + 1) * perPage, totalCount)}`} / ${totalCount.toLocaleString()} 件</div>
+    <div id="history-list"></div>
     ${paginationHtml}
   `;
 
   document.querySelector<HTMLInputElement>("#search")!.addEventListener("input", onSearch);
   document.querySelector<HTMLButtonElement>("#clear-all")!.addEventListener("click", onClearAll);
-  document.querySelectorAll<HTMLButtonElement>(".delete-btn").forEach((btn) => {
-    btn.addEventListener("click", onDelete);
-  });
+  const list = document.querySelector<HTMLDivElement>("#history-list")!;
+  if (currentItems.length === 0) {
+    list.innerHTML = `<div class="empty">${searchQuery ? "検索結果がありません" : "履歴がまだありません"}</div>`;
+  } else {
+    list.addEventListener("click", onDelete);
+    list.innerHTML = rows.map(renderHistoryRow).join("");
+  }
   document.querySelectorAll<HTMLButtonElement>(".page-btn").forEach((btn) => {
     btn.addEventListener("click", onPageChange);
   });
@@ -171,8 +188,11 @@ function onPageChange(e: Event) {
 }
 
 async function onDelete(e: Event) {
-  const btn = e.currentTarget as HTMLButtonElement;
+  const target = e.target as HTMLElement;
+  const btn = target.closest<HTMLButtonElement>(".delete-btn");
+  if (!btn) return;
   const id = Number(btn.dataset.id);
+  if (!Number.isSafeInteger(id)) return;
   await deleteVisit(id);
   void requestSync().catch((error: unknown) => console.error("Sync failed", error));
   loadPage();
@@ -199,11 +219,9 @@ async function loadPage() {
 }
 
 async function getPerPage(): Promise<number> {
-  return new Promise((resolve) => {
-    browser.storage.local.get("perPage").then((data) => {
-      resolve((data as { perPage?: number }).perPage ?? DEFAULT_PER_PAGE);
-    });
-  });
+  const data = (await browser.storage.local.get("perPage")) as { perPage?: number };
+  const value = Number.isFinite(data.perPage) ? data.perPage! : DEFAULT_PER_PAGE;
+  return Math.max(10, Math.min(MAX_PER_PAGE, value));
 }
 
 async function init() {

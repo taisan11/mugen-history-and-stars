@@ -19,7 +19,8 @@ import {
 // import { extensionApi } from "../extension-api.ts";
 import "./style.css";
 
-const DEFAULT_PER_PAGE = 500;
+const DEFAULT_PER_PAGE = 200;
+const MAX_PER_PAGE = 2_000;
 const BROWSER_ROOT_FOLDERS = new Set([
   "ブックマーク バー",
   "その他のブックマーク",
@@ -32,9 +33,15 @@ const BROWSER_ROOT_FOLDERS = new Set([
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
 function getStorage(): Promise<{ perPage: number }> {
-  return browser.storage.local.get("perPage").then((data) => ({
-    perPage: (data as { perPage?: number }).perPage ?? DEFAULT_PER_PAGE,
-  }));
+  return browser.storage.local.get("perPage").then((data) => {
+    const value = (data as { perPage?: number }).perPage;
+    return {
+      perPage: Math.max(
+        10,
+        Math.min(MAX_PER_PAGE, Number.isFinite(value) ? value! : DEFAULT_PER_PAGE),
+      ),
+    };
+  });
 }
 
 function setStorage(value: { perPage: number }): Promise<void> {
@@ -207,7 +214,7 @@ async function init() {
     <h1>設定</h1>
     <div class="setting">
       <label for="perPage">1ページあたりの履歴件数</label>
-      <input type="number" id="perPage" min="10" max="10000" step="10" value="${perPage}" />
+      <input type="number" id="perPage" min="10" max="${MAX_PER_PAGE}" step="10" value="${perPage}" />
     </div>
     <div class="setting backup-setting">
       <h2>バックアップ</h2>
@@ -256,7 +263,7 @@ async function init() {
   const status = document.querySelector<HTMLDivElement>("#status")!;
 
   input.addEventListener("change", async () => {
-    const val = Math.max(10, Math.min(10000, Number(input.value) || DEFAULT_PER_PAGE));
+    const val = Math.max(10, Math.min(MAX_PER_PAGE, Number(input.value) || DEFAULT_PER_PAGE));
     input.value = String(val);
     await setStorage({ perPage: val });
     status.textContent = "保存しました";

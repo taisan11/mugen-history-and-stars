@@ -1,0 +1,1 @@
+CREATE INDEX `sync_operations_user_received_idx` ON `sync_operations` (`user_id`,`received_at`);

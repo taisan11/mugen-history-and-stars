@@ -77,17 +77,34 @@ function uuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function getSyncInfo(): Promise<SyncInfo | undefined> {
-  const data = (await browser.storage.local.get(["syncEnabled", "syncDeviceId"])) as {
-    syncEnabled?: boolean;
-    syncDeviceId?: string;
-  };
-  if (data.syncEnabled !== true || !data.syncDeviceId) return undefined;
-  return { enabled: true, deviceId: data.syncDeviceId };
+let syncInfoPromise: Promise<SyncInfo | undefined> | undefined;
+
+function getSyncInfo(): Promise<SyncInfo | undefined> {
+  if (syncInfoPromise) return syncInfoPromise;
+  syncInfoPromise = browser.storage.local
+    .get(["syncEnabled", "syncDeviceId"])
+    .then((data) => {
+      const value = data as { syncEnabled?: boolean; syncDeviceId?: string };
+      if (value.syncEnabled !== true || !value.syncDeviceId) return undefined;
+      return { enabled: true, deviceId: value.syncDeviceId };
+    })
+    .catch((error: unknown) => {
+      syncInfoPromise = undefined;
+      throw error;
+    });
+  return syncInfoPromise;
 }
 
+browser.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === "local" && ("syncEnabled" in changes || "syncDeviceId" in changes))
+    syncInfoPromise = undefined;
+});
+
+let dbPromise: Promise<IDBDatabase> | undefined;
+
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (dbPromise) return dbPromise;
+  dbPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -106,13 +123,29 @@ function openDB(): Promise<IDBDatabase> {
       outbox.createIndex("clientUpdatedAt", "clientUpdatedAt", { unique: false });
       db.createObjectStore("sync_state", { keyPath: "key" });
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      // Keep one connection alive for the lifetime of this extension context.
+      // Opening IndexedDB is surprisingly expensive on every navigation.
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = undefined;
+      };
+      resolve(db);
+    };
+    request.onerror = () => {
+      dbPromise = undefined;
+      reject(request.error);
+    };
   });
+  return dbPromise;
 }
 
-export function resetDatabase(): Promise<void> {
-  return new Promise((resolve, reject) => {
+export async function resetDatabase(): Promise<void> {
+  const db = await dbPromise?.catch(() => undefined);
+  db?.close();
+  dbPromise = undefined;
+  await new Promise<void>((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DB_NAME);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
@@ -127,18 +160,15 @@ function requestResult<T>(request: IDBRequest<T>): Promise<T> {
   });
 }
 
-function transactionDone(db: IDBDatabase, tx: IDBTransaction): Promise<void> {
+function transactionDone(tx: IDBTransaction): Promise<void> {
   return new Promise((resolve, reject) => {
     tx.oncomplete = () => {
-      db.close();
       resolve();
     };
     tx.onerror = () => {
-      db.close();
       reject(tx.error);
     };
     tx.onabort = () => {
-      db.close();
       reject(tx.error ?? new Error("IndexedDB transaction aborted"));
     };
   });
@@ -212,7 +242,7 @@ export async function addVisit(
   };
   store.add(record);
   if (info) putOutbox(tx.objectStore("sync_outbox"), "history", "upsert", record, info);
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function addVisits(
@@ -237,7 +267,54 @@ export async function addVisits(
     store.add(record);
     if (info) putOutbox(outbox!, "history", "upsert", record, info);
   });
-  return transactionDone(db, tx);
+  return transactionDone(tx);
+}
+
+/**
+ * Update the metadata of the most recent visit for a URL.
+ *
+ * Titles on modern sites are often assigned after navigation has completed.
+ * Keeping this operation separate from addVisit prevents a late title update
+ * from creating a second history entry (or changing its visitedAt timestamp).
+ * The result distinguishes a missing URL from an already up-to-date record so
+ * callers can safely handle the first message after a service-worker restart.
+ */
+export async function updateVisitMetadata(
+  url: string,
+  changes: Partial<Pick<HistoryEntry, "title" | "favicon">>,
+): Promise<"updated" | "unchanged" | "missing"> {
+  const info = await getSyncInfo();
+  const stores = info ? ["visits", "sync_outbox"] : ["visits"];
+  const db = await openDB();
+  const tx = db.transaction(stores, "readwrite");
+  const store = tx.objectStore("visits");
+  const cursor = await requestResult<IDBCursorWithValue | null>(
+    store.index("url").openCursor(IDBKeyRange.only(url), "prev"),
+  );
+  const current = cursor?.value as HistoryEntry | undefined;
+  if (!current) {
+    await transactionDone(tx);
+    return "missing";
+  }
+
+  const titleChanged = Boolean(changes.title && changes.title !== current.title);
+  const faviconChanged = Boolean(changes.favicon && changes.favicon !== current.favicon);
+  if (!titleChanged && !faviconChanged) {
+    await transactionDone(tx);
+    return "unchanged";
+  }
+
+  const record: HistoryEntry = {
+    ...current,
+    ...(titleChanged ? { title: changes.title } : {}),
+    ...(faviconChanged ? { favicon: changes.favicon } : {}),
+    updatedAt: nextUpdatedAt(current.updatedAt),
+    updatedBy: info?.deviceId ?? current.updatedBy,
+  };
+  store.put(record);
+  if (info) putOutbox(tx.objectStore("sync_outbox"), "history", "upsert", record, info);
+  await transactionDone(tx);
+  return "updated";
 }
 
 export async function getAllVisits(): Promise<HistoryEntry[]> {
@@ -252,12 +329,10 @@ export async function getAllVisits(): Promise<HistoryEntry[]> {
         results.push(cursor.value);
         cursor.continue();
       } else {
-        db.close();
         resolve(results);
       }
     };
     request.onerror = () => {
-      db.close();
       reject(request.error);
     };
   });
@@ -284,7 +359,7 @@ export async function deleteVisit(id: number): Promise<void> {
         info,
       );
   }
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function clearAllVisits(): Promise<void> {
@@ -310,23 +385,7 @@ export async function clearAllVisits(): Promise<void> {
     }
   }
   store.clear();
-  return transactionDone(db, tx);
-}
-
-export async function getVisitCount(): Promise<number> {
-  const db = await openDB();
-  const tx = db.transaction("visits", "readonly");
-  const request = tx.objectStore("visits").count();
-  return new Promise((resolve, reject) => {
-    request.onsuccess = () => {
-      db.close();
-      resolve(request.result);
-    };
-    request.onerror = () => {
-      db.close();
-      reject(request.error);
-    };
-  });
+  return transactionDone(tx);
 }
 
 export async function getVisitsPage(
@@ -336,9 +395,9 @@ export async function getVisitsPage(
   const db = await openDB();
   const tx = db.transaction("visits", "readonly");
   const store = tx.objectStore("visits");
-  const total = await requestResult<number>(store.count());
   const skip = page * perPage;
-  const items = await new Promise<HistoryEntry[]>((resolve, reject) => {
+  const totalPromise = requestResult<number>(store.count());
+  const itemsPromise = new Promise<HistoryEntry[]>((resolve, reject) => {
     const results: HistoryEntry[] = [];
     const req = store.index("visitedAt").openCursor(null, "prev");
     let skipped = 0;
@@ -362,7 +421,7 @@ export async function getVisitsPage(
     };
     req.onerror = () => reject(req.error);
   });
-  db.close();
+  const [total, items] = await Promise.all([totalPromise, itemsPromise]);
   return { items, total };
 }
 
@@ -371,35 +430,32 @@ export async function searchVisitsPage(
   page: number,
   perPage: number,
 ): Promise<{ items: HistoryEntry[]; total: number }> {
-  const all = await getAllVisits();
   const q = query.toLowerCase();
-  const filtered = all.filter(
-    (e) => e.url.toLowerCase().includes(q) || e.title.toLowerCase().includes(q),
-  );
-  const total = filtered.length;
   const start = page * perPage;
-  return { items: filtered.slice(start, start + perPage), total };
+  const db = await openDB();
+  const tx = db.transaction("visits", "readonly");
+  const request = tx.objectStore("visits").index("visitedAt").openCursor(null, "prev");
+  const items: HistoryEntry[] = [];
+  let total = 0;
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve({ items, total });
+        return;
+      }
+      const entry = cursor.value as HistoryEntry;
+      if (entry.url.toLowerCase().includes(q) || entry.title.toLowerCase().includes(q)) {
+        if (total >= start && items.length < perPage) items.push(entry);
+        total++;
+      }
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+  });
 }
 
 // --- Bookmarks ---
-
-export async function addBookmark(entry: BookmarkInput): Promise<void> {
-  const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["bookmarks", "sync_outbox"] : ["bookmarks"], "readwrite");
-  const now = Date.now();
-  const record: BookmarkEntry = {
-    ...entry,
-    folder: entry.folder,
-    syncId: uuid(),
-    createdAt: entry.createdAt ?? now,
-    updatedAt: now,
-    updatedBy: info?.deviceId ?? "",
-  };
-  tx.objectStore("bookmarks").add(record);
-  if (info) putOutbox(tx.objectStore("sync_outbox"), "bookmark", "upsert", record, info);
-  return transactionDone(db, tx);
-}
 
 export async function addBookmarks(entries: BookmarkInput[]): Promise<void> {
   if (entries.length === 0) return;
@@ -421,7 +477,7 @@ export async function addBookmarks(entries: BookmarkInput[]): Promise<void> {
     store.add(record);
     if (info) putOutbox(outbox!, "bookmark", "upsert", record, info);
   }
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function removeBookmark(id: number): Promise<void> {
@@ -445,7 +501,47 @@ export async function removeBookmark(id: number): Promise<void> {
         info,
       );
   }
-  return transactionDone(db, tx);
+  return transactionDone(tx);
+}
+
+/** Toggle a bookmark in one transaction and return its new state. */
+export async function toggleBookmark(entry: BookmarkInput): Promise<boolean> {
+  const info = await getSyncInfo();
+  const db = await openDB();
+  const stores = info ? ["bookmarks", "sync_outbox"] : ["bookmarks"];
+  const tx = db.transaction(stores, "readwrite");
+  const store = tx.objectStore("bookmarks");
+  const existing = await requestResult<BookmarkEntry | undefined>(
+    store.index("url").get(entry.url),
+  );
+  if (existing) {
+    store.delete(existing.id!);
+    if (info)
+      putOutbox(
+        tx.objectStore("sync_outbox"),
+        "bookmark",
+        "delete",
+        {
+          syncId: existing.syncId,
+          updatedAt: nextUpdatedAt(existing.updatedAt),
+          updatedBy: info.deviceId,
+        },
+        info,
+      );
+  } else {
+    const now = Date.now();
+    const record: BookmarkEntry = {
+      ...entry,
+      syncId: uuid(),
+      createdAt: entry.createdAt ?? now,
+      updatedAt: now,
+      updatedBy: info?.deviceId ?? "",
+    };
+    store.add(record);
+    if (info) putOutbox(tx.objectStore("sync_outbox"), "bookmark", "upsert", record, info);
+  }
+  await transactionDone(tx);
+  return !existing;
 }
 
 export async function updateBookmark(
@@ -458,7 +554,7 @@ export async function updateBookmark(
   const store = tx.objectStore("bookmarks");
   const existing = await requestResult<BookmarkEntry | undefined>(store.get(id));
   if (!existing) {
-    return transactionDone(db, tx);
+    return transactionDone(tx);
   }
   const record: BookmarkEntry = {
     ...existing,
@@ -468,7 +564,7 @@ export async function updateBookmark(
   };
   store.put(record);
   if (info) putOutbox(tx.objectStore("sync_outbox"), "bookmark", "upsert", record, info);
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function moveBookmarksToFolder(fromFolder: string, toFolder: string): Promise<void> {
@@ -490,12 +586,7 @@ export async function moveBookmarksToFolder(fromFolder: string, toFolder: string
     store.put(record);
     if (info) putOutbox(outbox!, "bookmark", "upsert", record, info);
   }
-  return transactionDone(db, tx);
-}
-
-export async function isBookmarked(url: string): Promise<boolean> {
-  const result = await getBookmarkByUrl(url);
-  return result !== undefined;
+  return transactionDone(tx);
 }
 
 export async function getBookmarkByUrl(url: string): Promise<BookmarkEntry | undefined> {
@@ -504,7 +595,6 @@ export async function getBookmarkByUrl(url: string): Promise<BookmarkEntry | und
   const result = await requestResult<BookmarkEntry | undefined>(
     tx.objectStore("bookmarks").index("url").get(url),
   );
-  db.close();
   return result;
 }
 
@@ -520,12 +610,10 @@ export async function getAllBookmarks(): Promise<BookmarkEntry[]> {
         results.push(cursor.value);
         cursor.continue();
       } else {
-        db.close();
         resolve(results);
       }
     };
     request.onerror = () => {
-      db.close();
       reject(request.error);
     };
   });
@@ -539,7 +627,6 @@ export async function getOutbox(limit = 100): Promise<OutboxEntry[]> {
   const result = await requestResult<OutboxEntry[]>(
     tx.objectStore("sync_outbox").getAll(undefined, limit),
   );
-  db.close();
   return result;
 }
 
@@ -547,16 +634,11 @@ export async function getSyncState(): Promise<SyncState> {
   const db = await openDB();
   const tx = db.transaction("sync_state", "readonly");
   const store = tx.objectStore("sync_state");
-  const cursor = await requestResult<{ key: string; value: unknown } | undefined>(
-    store.get("cursor"),
-  );
-  const bootstrap = await requestResult<{ key: string; value: unknown } | undefined>(
-    store.get("bootstrap"),
-  );
-  const pendingDeletionIds = await requestResult<{ key: string; value: unknown } | undefined>(
-    store.get("pendingDeletionIds"),
-  );
-  db.close();
+  const [cursor, bootstrap, pendingDeletionIds] = await Promise.all([
+    requestResult<{ key: string; value: unknown } | undefined>(store.get("cursor")),
+    requestResult<{ key: string; value: unknown } | undefined>(store.get("bootstrap")),
+    requestResult<{ key: string; value: unknown } | undefined>(store.get("pendingDeletionIds")),
+  ]);
   return {
     cursor: typeof cursor?.value === "number" ? cursor.value : 0,
     bootstrap:
@@ -580,7 +662,7 @@ export async function resetSyncState(clearOutbox = false): Promise<void> {
   store.put({ key: "bootstrap", value: "pending" });
   store.put({ key: "pendingDeletionIds", value: [] });
   if (clearOutbox) tx.objectStore("sync_outbox").clear();
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function enqueueBootstrap(): Promise<boolean> {
@@ -592,7 +674,7 @@ export async function enqueueBootstrap(): Promise<boolean> {
     tx.objectStore("sync_state").get("bootstrap"),
   );
   if (state?.value === "queued" || state?.value === "complete") {
-    await transactionDone(db, tx);
+    await transactionDone(tx);
     return false;
   }
   const outbox = tx.objectStore("sync_outbox");
@@ -611,7 +693,7 @@ export async function enqueueBootstrap(): Promise<boolean> {
     putOutbox(outbox, "bookmark", "upsert", record, info);
   }
   tx.objectStore("sync_state").put({ key: "bootstrap", value: "queued" });
-  await transactionDone(db, tx);
+  await transactionDone(tx);
   return true;
 }
 
@@ -637,7 +719,7 @@ export async function applyRemoteChanges(changes: RemoteChange[]): Promise<void>
     if (current) normalized.id = current.id;
     store.put(normalized);
   }
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -703,12 +785,12 @@ export async function commitSyncBatch(
   for (const operationId of operationIds) store.delete(operationId);
   tx.objectStore("sync_state").put({ key: "cursor", value: cursor });
   tx.objectStore("sync_state").put({ key: "pendingDeletionIds", value: pendingDeletionIds });
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }
 
 export async function markBootstrapComplete(): Promise<void> {
   const db = await openDB();
   const tx = db.transaction("sync_state", "readwrite");
   tx.objectStore("sync_state").put({ key: "bootstrap", value: "complete" });
-  return transactionDone(db, tx);
+  return transactionDone(tx);
 }

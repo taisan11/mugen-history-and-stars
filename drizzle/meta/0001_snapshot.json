@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "5b71af21-a052-4ab1-8c5c-5eb8c984fc82",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "546d5458-2dab-4110-b84b-87873793959f",
+  "prevId": "5b71af21-a052-4ab1-8c5c-5eb8c984fc82",
   "tables": {
     "bookmarks": {
       "name": "bookmarks",
@@ -345,6 +345,51 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
+    "plans": {
+      "name": "plans",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_bookmarks": {
+          "name": "max_bookmarks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_history_entries": {
+          "name": "max_history_entries",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "max_devices": {
+          "name": "max_devices",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "operation_retention_days": {
+          "name": "operation_retention_days",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
     "sync_operations": {
       "name": "sync_operations",
       "columns": {
@@ -407,6 +452,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        },
+        "plan_id": {
+          "name": "plan_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'free'"
         },
         "revision": {
           "name": "revision",

@@ -1,12 +1,13 @@
 import { cors } from "hono/cors";
 import { Hono } from "hono";
-import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import {
   bookmarks,
   deletionEventDevices,
   deletionEvents,
   historyEntries,
+  plans,
   syncOperations,
   users,
 } from "./schema.ts";
@@ -14,6 +15,7 @@ import {
 export interface Env {
   DB: D1Database;
   CORS_ORIGINS?: string;
+  SYNC_RATE_LIMITER: RateLimit;
 }
 
 type AppEnv = {
@@ -49,6 +51,46 @@ const MAX_RESPONSE_CHANGES = 500;
 const MAX_BODY_BYTES = 1_048_576;
 const MAX_STRING_LENGTH = 512;
 const SERVER_DEVICE_ID = "\uffff";
+const MAX_HISTORY_PRUNE_PER_SYNC = 1_000;
+const DEFAULT_PLAN_ID = "free";
+
+function isLimited(value: number): boolean {
+  return value >= 0;
+}
+
+class ApiError extends Error {
+  readonly status: 409 | 429 | 503;
+  readonly code: string;
+
+  constructor(
+    status: 409 | 429 | 503,
+    code: string,
+    message: string,
+  ) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function logEvent(event: string, fields: Record<string, unknown> = {}): void {
+  console.log({
+    service: "mugen-history-sync",
+    event,
+    timestamp: new Date().toISOString(),
+    ...fields,
+  });
+}
+
+function logError(event: string, error: unknown, fields: Record<string, unknown> = {}): void {
+  console.error({
+    service: "mugen-history-sync",
+    event,
+    timestamp: new Date().toISOString(),
+    error: error instanceof Error ? error.message : String(error),
+    ...fields,
+  });
+}
 
 const localOriginPattern = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
 const extensionOriginPattern = /^(?:chrome|moz)-extension:\/\/[a-z\d-]+$/i;
@@ -80,13 +122,17 @@ function isBoundedString(value: unknown, maxLength = MAX_STRING_LENGTH): value i
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
 }
 
+function isNullableString(value: unknown, maxLength = MAX_STRING_LENGTH): value is string {
+  return typeof value === "string" && value.length <= maxLength;
+}
+
 function isTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 function validPayload(kind: SyncKind, value: unknown): value is ChangePayload {
   if (!isRecord(value)) return false;
-  if (!isBoundedString(value.url) || !isBoundedString(value.favicon)) return false;
+  if (!isBoundedString(value.url) || !isNullableString(value.favicon)) return false;
   if (kind === "bookmark") {
     return (
       isBoundedString(value.name) &&
@@ -95,7 +141,7 @@ function validPayload(kind: SyncKind, value: unknown): value is ChangePayload {
       value.folder.length <= MAX_STRING_LENGTH
     );
   }
-  return isBoundedString(value.title) && isTimestamp(value.visitedAt);
+  return isNullableString(value.title) && isTimestamp(value.visitedAt);
 }
 
 function validateChange(value: unknown): value is IncomingChange {
@@ -137,35 +183,53 @@ function isNewer(
   );
 }
 
+type DatabaseExecutor = Pick<ReturnType<typeof drizzle>, "select" | "insert" | "update" | "delete">;
+
+async function getPlan(db: DatabaseExecutor, planId: string): Promise<typeof plans.$inferSelect> {
+  const plan = await db.select().from(plans).where(eq(plans.id, planId)).limit(1).get();
+  if (plan) return plan;
+  const fallback = await db.select().from(plans).where(eq(plans.id, DEFAULT_PLAN_ID)).limit(1).get();
+  if (!fallback) throw new Error("Default plan is not configured");
+  return fallback;
+}
+
 async function ensureUser(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   userId: string,
   deviceId: string,
-): Promise<typeof users.$inferSelect> {
-  const existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
+): Promise<{ user: typeof users.$inferSelect; plan: typeof plans.$inferSelect }> {
+  let existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
   if (!existing) {
-    return (await db
+    await db
       .insert(users)
       .values({
         id: userId,
         registeredAt: Date.now(),
         deviceIds: [deviceId],
+        planId: DEFAULT_PLAN_ID,
         revision: 0,
       })
-      .returning()
-      .get()) as typeof users.$inferSelect;
+      .onConflictDoNothing({ target: users.id })
+      .run();
+    existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
   }
+  if (!existing) throw new Error("User could not be created");
+
+  const plan = await getPlan(db, existing.planId || DEFAULT_PLAN_ID);
 
   const deviceIds = Array.isArray(existing.deviceIds) ? existing.deviceIds : [];
   if (!deviceIds.includes(deviceId)) {
+    if (isLimited(plan.maxDevices) && deviceIds.length >= plan.maxDevices) {
+      throw new ApiError(409, "device_limit_reached", "同時利用できるデバイス数の上限に達しています");
+    }
     deviceIds.push(deviceId);
     await db.update(users).set({ deviceIds }).where(eq(users.id, userId)).run();
-    return { ...existing, deviceIds };
+    existing = { ...existing, deviceIds };
   }
-  return existing;
+  return { user: existing, plan };
 }
 
-async function nextRevision(db: ReturnType<typeof drizzle>, userId: string): Promise<number> {
+async function nextRevision(db: DatabaseExecutor, userId: string): Promise<number> {
   const updated = await db
     .update(users)
     .set({ revision: sql`${users.revision} + 1` })
@@ -177,7 +241,7 @@ async function nextRevision(db: ReturnType<typeof drizzle>, userId: string): Pro
 }
 
 async function currentItem(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   userId: string,
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<typeof bookmarks.$inferSelect | typeof historyEntries.$inferSelect | undefined> {
@@ -198,7 +262,7 @@ async function currentItem(
 }
 
 async function latestDeletion(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   userId: string,
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<typeof deletionEvents.$inferSelect | undefined> {
@@ -218,7 +282,7 @@ async function latestDeletion(
 }
 
 async function recordDeletion(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   user: typeof users.$inferSelect,
   change: Pick<IncomingChange, "kind" | "itemId" | "clientUpdatedAt" | "deviceId">,
   deviceIds: string[],
@@ -250,7 +314,7 @@ async function recordDeletion(
 }
 
 async function removeCurrentItem(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   userId: string,
   change: Pick<IncomingChange, "kind" | "itemId">,
 ): Promise<void> {
@@ -268,7 +332,7 @@ async function removeCurrentItem(
 }
 
 async function applyDelete(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   user: typeof users.$inferSelect,
   change: IncomingChange,
   deviceIds: string[],
@@ -287,8 +351,9 @@ async function applyDelete(
 }
 
 async function applyUpsert(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   user: typeof users.$inferSelect,
+  plan: typeof plans.$inferSelect,
   change: IncomingChange,
   deviceIds: string[],
   now: number,
@@ -337,6 +402,17 @@ async function applyUpsert(
         deviceIds,
         now,
       );
+    }
+
+    if (!current) {
+      const countResult = await db
+        .select({ count: sql<number>`count(*)` })
+        .from(bookmarks)
+        .where(eq(bookmarks.userId, user.id))
+        .get();
+      if (isLimited(plan.maxBookmarks) && Number(countResult?.count ?? 0) >= plan.maxBookmarks) {
+        throw new ApiError(409, "bookmark_limit_reached", "ブックマーク件数の上限に達しています");
+      }
     }
 
     const serverRevision = await nextRevision(db, user.id);
@@ -390,8 +466,52 @@ async function applyUpsert(
   }
 }
 
+async function pruneHistory(
+  db: DatabaseExecutor,
+  user: typeof users.$inferSelect,
+  plan: typeof plans.$inferSelect,
+): Promise<number> {
+  if (!isLimited(plan.maxHistoryEntries)) return 0;
+  const countResult = await db
+    .select({ count: sql<number>`count(*)` })
+    .from(historyEntries)
+    .where(eq(historyEntries.userId, user.id))
+    .get();
+  const excess = Math.max(0, Number(countResult?.count ?? 0) - plan.maxHistoryEntries);
+  if (excess === 0) return 0;
+
+  const rows = await db
+    .select()
+    .from(historyEntries)
+    .where(eq(historyEntries.userId, user.id))
+    .orderBy(asc(historyEntries.visitedAt), asc(historyEntries.serverRevision))
+    .limit(Math.min(excess, MAX_HISTORY_PRUNE_PER_SYNC))
+    .all();
+  for (const row of rows) {
+    // Capacity pruning is server-local retention, not a user deletion.
+    // Do not create deletion events: otherwise every pruned history entry
+    // consumes tombstone and per-device acknowledgement rows indefinitely.
+    await removeCurrentItem(db, user.id, { kind: "history", itemId: row.itemId });
+  }
+  return rows.length;
+}
+
+async function cleanupOperationLog(
+  db: DatabaseExecutor,
+  userId: string,
+  plan: typeof plans.$inferSelect,
+  now: number,
+): Promise<number> {
+  const cutoff = now - plan.operationRetentionDays * 24 * 60 * 60 * 1_000;
+  const result = await db
+    .delete(syncOperations)
+    .where(and(eq(syncOperations.userId, userId), lt(syncOperations.receivedAt, cutoff)))
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 async function acknowledgeDeletions(
-  db: ReturnType<typeof drizzle>,
+  db: DatabaseExecutor,
   userId: string,
   deviceId: string,
   deletionIds: number[],
@@ -469,8 +589,17 @@ app.use("/v1/sync", async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
   const authorization = c.req.header("Authorization");
   const match = authorization?.match(/^Bearer\s+(\S+)$/i);
-  if (!match || match[1].length > MAX_STRING_LENGTH) return c.json({ error: "unauthorized" }, 401);
-  c.set("userId", await userIdForToken(match[1]));
+  if (!match || match[1].length > MAX_STRING_LENGTH) {
+    logEvent("auth_rejected", { route: "/v1/sync", reason: "invalid_bearer" });
+    return c.json({ error: "unauthorized" }, 401);
+  }
+  const userId = await userIdForToken(match[1]);
+  const limited = await c.env.SYNC_RATE_LIMITER.limit({ key: userId });
+  if (!limited.success) {
+    logEvent("rate_limited", { route: "/v1/sync", userIdPrefix: userId.slice(0, 12) });
+    return c.json({ error: "rate_limited" }, 429, { "Retry-After": "60" });
+  }
+  c.set("userId", userId);
   return next();
 });
 
@@ -495,34 +624,50 @@ app.post("/v1/sync", async (c) => {
 
   const userId = c.get("userId");
   const db = drizzle(c.env.DB);
-  const user = await ensureUser(db, userId, payload.deviceId);
   const now = Date.now();
 
-  await acknowledgeDeletions(
-    db,
-    userId,
-    payload.deviceId,
-    payload.acknowledgedDeletionIds ?? [],
-    now,
-  );
+  const applied = await db.transaction(async (tx) => {
+    const account = await ensureUser(tx, userId, payload.deviceId);
+    await acknowledgeDeletions(
+      tx,
+      userId,
+      payload.deviceId,
+      payload.acknowledgedDeletionIds ?? [],
+      now,
+    );
 
-  for (const change of payload.changes) {
-    const claimed = await db
-      .insert(syncOperations)
-      .values({
-        userId,
-        operationId: change.operationId,
-        receivedAt: now,
-      })
-      .onConflictDoNothing({ target: [syncOperations.userId, syncOperations.operationId] })
-      .run();
-    if (claimed.meta.changes === 0) continue;
+    for (const change of payload.changes) {
+      const claimed = await tx
+        .insert(syncOperations)
+        .values({
+          userId,
+          operationId: change.operationId,
+          receivedAt: now,
+        })
+        .onConflictDoNothing({ target: [syncOperations.userId, syncOperations.operationId] })
+        .run();
+      if (claimed.meta.changes === 0) continue;
 
-    if (change.operation === "delete") {
-      await applyDelete(db, user, change, user.deviceIds, now);
-    } else {
-      await applyUpsert(db, user, change, user.deviceIds, now);
+      if (change.operation === "delete") {
+        await applyDelete(tx, account.user, change, account.user.deviceIds, now);
+      } else {
+        await applyUpsert(tx, account.user, account.plan, change, account.user.deviceIds, now);
+      }
     }
+
+    const prunedHistory = await pruneHistory(tx, account.user, account.plan);
+    const cleanedOperations = await cleanupOperationLog(tx, userId, account.plan, now);
+    return { account, prunedHistory, cleanedOperations };
+  });
+  const { account, prunedHistory, cleanedOperations } = applied;
+  if (prunedHistory > 0 || cleanedOperations > 0) {
+    logEvent("maintenance_completed", {
+      route: "/v1/sync",
+      userIdPrefix: userId.slice(0, 12),
+      plan: account.plan.id,
+      prunedHistory,
+      cleanedOperations,
+    });
   }
 
   const cursor = payload.cursor ?? 0;
@@ -597,6 +742,16 @@ app.post("/v1/sync", async (c) => {
     .slice(0, MAX_RESPONSE_CHANGES);
 
   const nextCursor = changes.at(-1)?.serverRevision ?? cursor;
+  logEvent("sync_completed", {
+    route: "/v1/sync",
+    userIdPrefix: userId.slice(0, 12),
+    plan: account.plan.id,
+    deviceCount: account.user.deviceIds.length,
+    inputChanges: payload.changes.length,
+    outputChanges: changes.length,
+    cursor: nextCursor,
+    durationMs: Date.now() - now,
+  });
   return c.json({
     cursor: nextCursor,
     changes,
@@ -604,7 +759,16 @@ app.post("/v1/sync", async (c) => {
 });
 
 app.onError((error, c) => {
-  console.error(error);
+  if (error instanceof ApiError) {
+    logEvent("request_rejected", {
+      route: c.req.path,
+      code: error.code,
+      status: error.status,
+      userIdPrefix: c.get("userId")?.slice(0, 12),
+    });
+    return c.json({ error: error.code, message: error.message }, error.status);
+  }
+  logError("request_failed", error, { route: c.req.path, status: 500 });
   return c.json({ error: "internal_server_error" }, 500);
 });
 

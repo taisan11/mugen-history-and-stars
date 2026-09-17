@@ -1,14 +1,28 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "mugen-history-sync",
-  "main": "server/index.ts",
-  "compatibility_date": "2026-08-11",
-  "d1_databases": [
-    {
-      "binding": "DB",
-      "database_name": "mugen-history-sync",
-      "database_id": "00000000-0000-0000-0000-000000000000",
-      "migrations_dir": "drizzle",
-    },
-  ],
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "mugen-history-sync",
+	"main": "server/index.ts",
+	"compatibility_date": "2026-08-11",
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1,
+	},
+	"ratelimits": [
+		{
+			"name": "SYNC_RATE_LIMITER",
+			"namespace_id": "1001",
+			"simple": {
+				"limit": 60,
+				"period": 60,
+			},
+		},
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "mugen-history-and-stars",
+			"database_id": "a54bb4ca-2638-4731-af06-8ee3d0878c2a",
+			"migrations_dir": "drizzle",
+		},
+	],
 }

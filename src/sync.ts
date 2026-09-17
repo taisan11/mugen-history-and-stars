@@ -45,6 +45,8 @@ interface SyncResponse {
 }
 
 let inFlight: Promise<SyncResult> | undefined;
+const encoder = new TextEncoder();
+let authKeyCache: { secret: string; key: CryptoKey } | undefined;
 
 function uuid(): string {
   const bytes = new Uint8Array(16);
@@ -112,19 +114,14 @@ export async function saveSyncSettings(syncUrl: string, syncSecret: string): Pro
 }
 
 export function requestSync(): Promise<SyncResult> {
-  return browser.runtime
-    .sendMessage({ type: "SYNC_NOW" })
-    .then((value) => value as SyncResult);
+  return browser.runtime.sendMessage({ type: "SYNC_NOW" }).then((value) => value as SyncResult);
 }
 
 async function deriveAuthKey(secret: string): Promise<CryptoKey> {
-  const rootKey = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
+  if (authKeyCache?.secret === secret) return authKeyCache.key;
+  const rootKey = await crypto.subtle.importKey("raw", encoder.encode(secret), "HKDF", false, [
+    "deriveKey",
+  ]);
   const derive = (
     label: string,
     keyAlgorithm: AesKeyGenParams | HmacKeyGenParams,
@@ -134,22 +131,26 @@ async function deriveAuthKey(secret: string): Promise<CryptoKey> {
       {
         name: "HKDF",
         hash: "SHA-256",
-        salt: new TextEncoder().encode(`mugen-history/${label}/salt`),
-        info: new TextEncoder().encode(`mugen-history/${label}/v1`),
+        salt: encoder.encode(`mugen-history/${label}/salt`),
+        info: encoder.encode(`mugen-history/${label}/v1`),
       },
       rootKey,
       keyAlgorithm,
       false,
       usages,
     );
-  return derive("authorization", { name: "HMAC", hash: "SHA-256", length: 256 }, ["sign"]);
+  const key = await derive("authorization", { name: "HMAC", hash: "SHA-256", length: 256 }, [
+    "sign",
+  ]);
+  authKeyCache = { secret, key };
+  return key;
 }
 
 async function authorizationToken(authKey: CryptoKey): Promise<string> {
   const signature = await crypto.subtle.sign(
     "HMAC",
     authKey,
-    new TextEncoder().encode("mugen-history-sync-auth-v1"),
+    encoder.encode("mugen-history-sync-auth-v1"),
   );
   return base64UrlEncode(new Uint8Array(signature));
 }
