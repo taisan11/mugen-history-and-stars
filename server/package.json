@@ -13,17 +13,18 @@
     "db:mg": "wrangler d1 migrations apply DB"
   },
   "dependencies": {
+    "@ark-ui/solid": "^5.39.2",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.13.8",
-    "solid-js": "^1.9.9"
+    "solid-js": "^1.9.15"
   },
   "devDependencies": {
-    "@types/node": "^24.4.0",
-    "@cloudflare/vite-plugin": "^1.20.0",
-    "@cloudflare/workers-types": "^5.20260917.1",
+    "@types/node": "^26.6.2",
+    "@cloudflare/vite-plugin": "^1.56.0",
+    "@cloudflare/workers-types": "^5.20260919.1",
     "drizzle-kit": "^0.31.10",
-    "vite-plugin-solid": "^2.11.9",
+    "vite-plugin-solid": "^2.11.14",
     "vite": "^8.3.0",
-    "wrangler": "^4.133.0"
+    "wrangler": "^4.135.0"
   }
 }

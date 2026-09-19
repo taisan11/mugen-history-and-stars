@@ -52,10 +52,23 @@ function validUrl(value: string): boolean {
   try { const url = new URL(value); return (url.protocol === "http:" || url.protocol === "https:") && url.hostname.length > 0; } catch { return false; }
 }
 
+function normalizeSyncUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || !url.hostname) return value.replace(/\/+$/, "");
+    if (url.pathname.replace(/\/+$/, "") === "/v1/sync") url.pathname = "/";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch {
+    return value.replace(/\/+$/, "");
+  }
+}
+
 export async function getSyncSettings(): Promise<SyncSettings> {
   const data = (await browser.storage.local.get(["syncUrl", "syncDeviceId", "syncEnabled", "authAccessToken", "authRefreshToken", "authAccessExpiresAt", "authUser"])) as Partial<SyncSettings>;
   return {
-    syncUrl: typeof data.syncUrl === "string" ? data.syncUrl : "",
+    syncUrl: typeof data.syncUrl === "string" ? normalizeSyncUrl(data.syncUrl) : "",
     syncDeviceId: typeof data.syncDeviceId === "string" ? data.syncDeviceId : "",
     syncEnabled: data.syncEnabled === true,
     authAccessToken: typeof data.authAccessToken === "string" ? data.authAccessToken : "",
@@ -68,7 +81,7 @@ export async function getSyncSettings(): Promise<SyncSettings> {
 export async function saveSyncSettings(syncUrl: string): Promise<void> {
   if (!validUrl(syncUrl)) throw new Error("同期サーバーURLは http または https を指定してください");
   const current = await getSyncSettings();
-  const normalizedUrl = syncUrl.replace(/\/+$/, "");
+  const normalizedUrl = normalizeSyncUrl(syncUrl);
   await browser.storage.local.set({ syncUrl: normalizedUrl, syncDeviceId: current.syncDeviceId || uuid(), syncEnabled: true });
   await resetSyncState(current.syncUrl !== normalizedUrl);
 }
