@@ -1,18 +1,18 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "mugen-history-sync",
+	"name": "mugen-history-and-stars",
 	"main": "backend/index.ts",
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
-	"compatibility_date": "2026-08-11",
+	"compatibility_date": "2026-09-11",
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1,
 	},
  "routes": [
     {
-      "pattern": "paxiv.taisan11.dev",
+      "pattern": "mugengen.taisan11.dev",
       "custom_domain": true
     }
   ],

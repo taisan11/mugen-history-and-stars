@@ -3,6 +3,28 @@ import { Hono } from "hono";
 import { and, asc, desc, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import {
+  ACCESS_TOKEN_TTL,
+  ADMIN_SESSION_TTL,
+  AUTH_CODE_TTL,
+  PASSWORD_ITERATIONS,
+  REFRESH_TOKEN_TTL,
+  clearedCookie,
+  cookie,
+  equalStrings,
+  hashPassword,
+  parseCookies,
+  randomToken,
+  sha256Base64Url,
+  sha256Hex,
+  validEmail,
+  validExtensionRedirect,
+  validPassword,
+  verifyPassword,
+} from "./auth.ts";
+import {
+  adminSessions,
+  authCodes,
+  authTokens,
   bookmarks,
   deletionEventDevices,
   deletionEvents,
@@ -16,12 +38,15 @@ export interface Env {
   DB: D1Database;
   CORS_ORIGINS?: string;
   SYNC_RATE_LIMITER: RateLimit;
+  ADMIN_PASSWORD_SALT?: string;
+  ADMIN_PASSWORD_SHA256?: string;
 }
 
 type AppEnv = {
   Bindings: Env;
   Variables: {
     userId: string;
+    adminAuthenticated?: boolean;
   };
 };
 
@@ -59,11 +84,11 @@ function isLimited(value: number): boolean {
 }
 
 class ApiError extends Error {
-  readonly status: 409 | 429 | 503;
+  readonly status: 400 | 401 | 403 | 404 | 409 | 429 | 503;
   readonly code: string;
 
   constructor(
-    status: 409 | 429 | 503,
+    status: 400 | 401 | 403 | 404 | 409 | 429 | 503,
     code: string,
     message: string,
   ) {
@@ -109,9 +134,114 @@ function allowedOrigin(origin: string, configured: string[]): boolean {
   return localOriginPattern.test(origin) || extensionOriginPattern.test(origin);
 }
 
-async function userIdForToken(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+type TokenClient = "web" | "extension";
+
+const ACCESS_COOKIE = "mugen_access";
+const REFRESH_COOKIE = "mugen_refresh";
+const ADMIN_COOKIE = "mugen_admin_session";
+
+function isSecureRequest(url: string): boolean {
+  return new URL(url).protocol === "https:";
+}
+
+function responseUser(user: typeof users.$inferSelect, plan: typeof plans.$inferSelect) {
+  return {
+    id: user.id,
+    email: user.email,
+    displayName: user.displayName,
+    status: user.status,
+    plan: {
+      id: plan.id,
+      maxBookmarks: plan.maxBookmarks,
+      maxHistoryEntries: plan.maxHistoryEntries,
+      maxDevices: plan.maxDevices,
+    },
+    deviceCount: user.deviceIds.length,
+    registeredAt: user.registeredAt,
+    lastLoginAt: user.lastLoginAt,
+  };
+}
+
+async function issueTokens(
+  db: DatabaseExecutor,
+  userId: string,
+  client: TokenClient,
+  now: number,
+): Promise<{ accessToken: string; refreshToken: string; accessExpiresAt: number; refreshExpiresAt: number }> {
+  const accessToken = randomToken();
+  const refreshToken = randomToken();
+  const accessExpiresAt = now + ACCESS_TOKEN_TTL;
+  const refreshExpiresAt = now + REFRESH_TOKEN_TTL;
+  await db.insert(authTokens).values([
+    {
+      id: randomToken(16),
+      userId,
+      tokenHash: await sha256Hex(accessToken),
+      kind: "access",
+      client,
+      createdAt: now,
+      expiresAt: accessExpiresAt,
+    },
+    {
+      id: randomToken(16),
+      userId,
+      tokenHash: await sha256Hex(refreshToken),
+      kind: "refresh",
+      client,
+      createdAt: now,
+      expiresAt: refreshExpiresAt,
+    },
+  ]).run();
+  return { accessToken, refreshToken, accessExpiresAt, refreshExpiresAt };
+}
+
+async function userForAccessToken(db: DatabaseExecutor, token: string, now = Date.now()) {
+  const tokenHash = await sha256Hex(token);
+  const tokenRow = await db
+    .select()
+    .from(authTokens)
+    .where(and(eq(authTokens.tokenHash, tokenHash), eq(authTokens.kind, "access")))
+    .limit(1)
+    .get();
+  if (!tokenRow || tokenRow.revokedAt !== null || tokenRow.expiresAt <= now) return undefined;
+  const user = await db.select().from(users).where(eq(users.id, tokenRow.userId)).limit(1).get();
+  if (!user || user.status !== "active") return undefined;
+  const plan = await getPlan(db, user.planId || DEFAULT_PLAN_ID);
+  return { token: tokenRow, user, plan };
+}
+
+async function userForRefreshToken(db: DatabaseExecutor, token: string, now = Date.now()) {
+  const tokenHash = await sha256Hex(token);
+  const tokenRow = await db
+    .select()
+    .from(authTokens)
+    .where(and(eq(authTokens.tokenHash, tokenHash), eq(authTokens.kind, "refresh")))
+    .limit(1)
+    .get();
+  if (!tokenRow || tokenRow.revokedAt !== null || tokenRow.expiresAt <= now) return undefined;
+  const user = await db.select().from(users).where(eq(users.id, tokenRow.userId)).limit(1).get();
+  if (!user || user.status !== "active") return undefined;
+  const plan = await getPlan(db, user.planId || DEFAULT_PLAN_ID);
+  return { token: tokenRow, user, plan };
+}
+
+function bearerOrCookie(c: { req: { header(name: string): string | undefined; raw: Request } }): string | undefined {
+  const authorization = c.req.header("Authorization");
+  const match = authorization?.match(/^Bearer\s+(\S+)$/i);
+  if (match) return match[1];
+  return parseCookies(c.req.header("Cookie"))[ACCESS_COOKIE];
+}
+
+function jsonObject(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+async function requestJson(c: { req: { json(): Promise<unknown> } }): Promise<Record<string, unknown> | undefined> {
+  try {
+    return jsonObject(await c.req.json());
+  } catch {
+    return undefined;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -198,22 +328,8 @@ async function ensureUser(
   userId: string,
   deviceId: string,
 ): Promise<{ user: typeof users.$inferSelect; plan: typeof plans.$inferSelect }> {
-  let existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
-  if (!existing) {
-    await db
-      .insert(users)
-      .values({
-        id: userId,
-        registeredAt: Date.now(),
-        deviceIds: [deviceId],
-        planId: DEFAULT_PLAN_ID,
-        revision: 0,
-      })
-      .onConflictDoNothing({ target: users.id })
-      .run();
-    existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
-  }
-  if (!existing) throw new Error("User could not be created");
+  const existing = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
+  if (!existing || existing.status !== "active") throw new ApiError(401, "unauthorized", "Account is not active");
 
   const plan = await getPlan(db, existing.planId || DEFAULT_PLAN_ID);
 
@@ -224,7 +340,7 @@ async function ensureUser(
     }
     deviceIds.push(deviceId);
     await db.update(users).set({ deviceIds }).where(eq(users.id, userId)).run();
-    existing = { ...existing, deviceIds };
+    return { user: { ...existing, deviceIds }, plan };
   }
   return { user: existing, plan };
 }
@@ -578,28 +694,295 @@ app.use("*", async (c, next) => {
   return cors({
     origin: (origin) => (allowedOrigin(origin, origins) ? origin : undefined),
     allowHeaders: ["Authorization", "Content-Type"],
-    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
+    credentials: true,
     maxAge: 86_400,
   })(c, next);
 });
 
 app.get("/health", (c) => c.json({ ok: true }));
 
+async function authenticatedUser(c: any, next: () => Promise<Response | void>): Promise<Response | void> {
+  if (c.req.method === "OPTIONS") return next();
+  const token = bearerOrCookie(c);
+  if (!token || token.length > 512) return c.json({ error: "unauthorized" }, 401);
+  const account = await userForAccessToken(drizzle(c.env.DB), token);
+  if (!account) return c.json({ error: "unauthorized" }, 401);
+  c.set("userId", account.user.id);
+  return next();
+}
+
+async function authenticatedAdmin(c: any, next: () => Promise<Response | void>): Promise<Response | void> {
+  if (c.req.method === "OPTIONS") return next();
+  const raw = parseCookies(c.req.header("Cookie"))[ADMIN_COOKIE];
+  if (!raw) return c.json({ error: "admin_unauthorized" }, 401);
+  const session = await drizzle(c.env.DB)
+    .select()
+    .from(adminSessions)
+    .where(eq(adminSessions.tokenHash, await sha256Hex(raw)))
+    .limit(1)
+    .get();
+  if (!session || session.revokedAt !== null || session.expiresAt <= Date.now()) {
+    return c.json({ error: "admin_unauthorized" }, 401);
+  }
+  c.set("adminAuthenticated", true);
+  return next();
+}
+
+function authCookies(c: any, tokens: { accessToken: string; refreshToken: string; accessExpiresAt: number; refreshExpiresAt: number }) {
+  const secure = isSecureRequest(c.req.url);
+  c.header("Set-Cookie", cookie(ACCESS_COOKIE, tokens.accessToken, Math.ceil((tokens.accessExpiresAt - Date.now()) / 1_000), secure));
+  c.header("Set-Cookie", cookie(REFRESH_COOKIE, tokens.refreshToken, Math.ceil((tokens.refreshExpiresAt - Date.now()) / 1_000), secure), { append: true });
+}
+
+app.post("/v1/auth/login", async (c) => {
+  const body = await requestJson(c);
+  const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const password = body?.password;
+  const client: TokenClient = body?.client === "extension" ? "extension" : "web";
+  if (!validEmail(email) || !validPassword(password)) return c.json({ error: "invalid_credentials" }, 401);
+  const db = drizzle(c.env.DB);
+  const user = await db.select().from(users).where(eq(users.email, email)).limit(1).get();
+  if (!user || user.status !== "active" || !user.passwordHash || !user.passwordSalt || !user.passwordIterations || !(await verifyPassword(password, user.passwordHash, user.passwordSalt, user.passwordIterations))) {
+    logEvent("auth_rejected", { route: "/v1/auth/login", reason: "invalid_credentials" });
+    return c.json({ error: "invalid_credentials" }, 401);
+  }
+  const now = Date.now();
+  const tokens = await issueTokens(db, user.id, client, now);
+  await db.update(users).set({ lastLoginAt: now }).where(eq(users.id, user.id)).run();
+  const plan = await getPlan(db, user.planId || DEFAULT_PLAN_ID);
+  if (client === "web") {
+    authCookies(c, tokens);
+    return c.json({ user: responseUser({ ...user, lastLoginAt: now }, plan) });
+  }
+  return c.json({ user: responseUser({ ...user, lastLoginAt: now }, plan), ...tokens });
+});
+
+app.post("/v1/auth/refresh", async (c) => {
+  const body = await requestJson(c);
+  const cookies = parseCookies(c.req.header("Cookie"));
+  const raw = typeof body?.refreshToken === "string" ? body.refreshToken : cookies[REFRESH_COOKIE];
+  if (!raw) return c.json({ error: "unauthorized" }, 401);
+  const db = drizzle(c.env.DB);
+  const account = await userForRefreshToken(db, raw);
+  if (!account) return c.json({ error: "unauthorized" }, 401);
+  const now = Date.now();
+  await db.update(authTokens).set({ revokedAt: now }).where(eq(authTokens.id, account.token.id)).run();
+  const client: TokenClient = body?.client === "extension" ? "extension" : account.token.client;
+  const tokens = await issueTokens(db, account.user.id, client, now);
+  await db.update(authTokens).set({ replacedBy: await sha256Hex(tokens.refreshToken) }).where(eq(authTokens.id, account.token.id)).run();
+  if (client === "web") {
+    authCookies(c, tokens);
+    return c.json({ user: responseUser(account.user, account.plan), ...tokens });
+  }
+  return c.json({ user: responseUser(account.user, account.plan), ...tokens });
+});
+
+app.post("/v1/auth/logout", async (c) => {
+  const db = drizzle(c.env.DB);
+  const cookies = parseCookies(c.req.header("Cookie"));
+  const values = [bearerOrCookie(c), cookies[REFRESH_COOKIE]].filter((value): value is string => Boolean(value));
+  const now = Date.now();
+  for (const value of values) await db.update(authTokens).set({ revokedAt: now }).where(eq(authTokens.tokenHash, await sha256Hex(value))).run();
+  const secure = isSecureRequest(c.req.url);
+  c.header("Set-Cookie", clearedCookie(ACCESS_COOKIE, secure));
+  c.header("Set-Cookie", clearedCookie(REFRESH_COOKIE, secure), { append: true });
+  return c.json({ ok: true });
+});
+
+app.use("/v1/auth/me", authenticatedUser);
+app.get("/v1/auth/me", async (c) => {
+  const db = drizzle(c.env.DB);
+  const account = await userForAccessToken(db, bearerOrCookie(c)!);
+  if (!account) return c.json({ error: "unauthorized" }, 401);
+  return c.json({ user: responseUser(account.user, account.plan) });
+});
+
+app.use("/v1/account", authenticatedUser);
+app.get("/v1/account/overview", async (c) => {
+  const userId = c.get("userId");
+  const db = drizzle(c.env.DB);
+  const [bookmarksCount, historyCount] = await Promise.all([
+    db.select({ count: sql<number>`count(*)` }).from(bookmarks).where(eq(bookmarks.userId, userId)).get(),
+    db.select({ count: sql<number>`count(*)` }).from(historyEntries).where(eq(historyEntries.userId, userId)).get(),
+  ]);
+  return c.json({ bookmarkCount: bookmarksCount?.count ?? 0, historyCount: historyCount?.count ?? 0 });
+});
+app.patch("/v1/account", async (c) => {
+  const body = await requestJson(c);
+  const userId = c.get("userId");
+  if (!userId) return c.json({ error: "unauthorized" }, 401);
+  const displayName = typeof body?.displayName === "string" ? body.displayName.trim() : undefined;
+  const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : undefined;
+  if (displayName !== undefined && (displayName.length < 1 || displayName.length > 100)) return c.json({ error: "invalid_display_name" }, 400);
+  if (email !== undefined && !validEmail(email)) return c.json({ error: "invalid_email" }, 400);
+  const db = drizzle(c.env.DB);
+  if (email) {
+    const duplicate = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1).get();
+    if (duplicate && duplicate.id !== userId) return c.json({ error: "email_already_exists" }, 409);
+  }
+  await db.update(users).set({ ...(displayName === undefined ? {} : { displayName }), ...(email === undefined ? {} : { email }) }).where(eq(users.id, userId)).run();
+  const account = await db.select().from(users).where(eq(users.id, userId)).limit(1).get();
+  if (!account) return c.json({ error: "unauthorized" }, 401);
+  return c.json({ user: responseUser(account, await getPlan(db, account.planId || DEFAULT_PLAN_ID)) });
+});
+
+app.get("/auth/authorize", (c) => {
+  const clientId = c.req.query("client_id");
+  const redirectUri = c.req.query("redirect_uri");
+  const codeChallenge = c.req.query("code_challenge");
+  const state = c.req.query("state");
+  if (clientId !== "extension" || !validExtensionRedirect(redirectUri) || !codeChallenge || !state || state.length > 256) return c.json({ error: "invalid_authorize_request" }, 400);
+  const params = new URLSearchParams({ authorize: "1", client_id: clientId, redirect_uri: redirectUri, code_challenge: codeChallenge, state });
+  return c.redirect(`/?${params.toString()}`);
+});
+
+app.use("/v1/auth/authorize/approve", authenticatedUser);
+app.post("/v1/auth/authorize/approve", async (c) => {
+  const body = await requestJson(c);
+  const userId = c.get("userId");
+  const redirectUri = body?.redirectUri;
+  const codeChallenge = body?.codeChallenge;
+  const clientId = body?.clientId;
+  const state = typeof body?.state === "string" ? body.state : "";
+  if (!userId || clientId !== "extension" || !validExtensionRedirect(redirectUri) || typeof codeChallenge !== "string" || codeChallenge.length < 43 || state.length > 256) return c.json({ error: "invalid_authorize_request" }, 400);
+  const code = randomToken(32);
+  const now = Date.now();
+  await drizzle(c.env.DB).insert(authCodes).values({ id: randomToken(16), codeHash: await sha256Hex(code), userId, clientId, redirectUri, codeChallenge, createdAt: now, expiresAt: now + AUTH_CODE_TTL }).run();
+  return c.json({ redirect: `${redirectUri}?${new URLSearchParams({ code, state }).toString()}` });
+});
+
+app.post("/v1/auth/token", async (c) => {
+  const body = await requestJson(c);
+  const code = body?.code;
+  const verifier = body?.codeVerifier;
+  const clientId = body?.clientId;
+  const redirectUri = body?.redirectUri;
+  if (typeof code !== "string" || typeof verifier !== "string" || clientId !== "extension" || !validExtensionRedirect(redirectUri)) return c.json({ error: "invalid_grant" }, 400);
+  const db = drizzle(c.env.DB);
+  const authCode = await db.select().from(authCodes).where(eq(authCodes.codeHash, await sha256Hex(code))).limit(1).get();
+  if (!authCode || authCode.clientId !== clientId || authCode.redirectUri !== redirectUri || authCode.consumedAt !== null || authCode.expiresAt <= Date.now() || !equalStrings(authCode.codeChallenge, await sha256Base64Url(verifier))) return c.json({ error: "invalid_grant" }, 400);
+  const consumed = await db.update(authCodes).set({ consumedAt: Date.now() }).where(and(eq(authCodes.id, authCode.id), isNull(authCodes.consumedAt))).run();
+  if (consumed.meta.changes === 0) return c.json({ error: "invalid_grant" }, 400);
+  const user = await db.select().from(users).where(eq(users.id, authCode.userId)).limit(1).get();
+  if (!user || user.status !== "active") return c.json({ error: "unauthorized" }, 401);
+  const plan = await getPlan(db, user.planId || DEFAULT_PLAN_ID);
+  return c.json({ user: responseUser(user, plan), ...(await issueTokens(db, user.id, "extension", Date.now())) });
+});
+
+app.post("/v1/admin/login", async (c) => {
+  const body = await requestJson(c);
+  const password = body?.password;
+  const salt = c.env.ADMIN_PASSWORD_SALT;
+  const expected = c.env.ADMIN_PASSWORD_SHA256;
+  if (typeof password !== "string" || !salt || !expected || !equalStrings(expected, await sha256Hex(`${password}${salt}`))) {
+    logEvent("admin_auth_rejected", { reason: "invalid_credentials" });
+    return c.json({ error: "invalid_credentials" }, 401);
+  }
+  const raw = randomToken();
+  const now = Date.now();
+  await drizzle(c.env.DB).insert(adminSessions).values({ id: randomToken(16), tokenHash: await sha256Hex(raw), createdAt: now, expiresAt: now + ADMIN_SESSION_TTL }).run();
+  c.header("Set-Cookie", cookie(ADMIN_COOKIE, raw, ADMIN_SESSION_TTL / 1_000, isSecureRequest(c.req.url), "Strict"));
+  return c.json({ admin: true, expiresAt: now + ADMIN_SESSION_TTL });
+});
+
+app.use("/v1/admin/me", authenticatedAdmin);
+app.get("/v1/admin/me", (c) => c.json({ admin: true }));
+
+app.post("/v1/admin/logout", async (c) => {
+  const raw = parseCookies(c.req.header("Cookie"))[ADMIN_COOKIE];
+  if (raw) await drizzle(c.env.DB).update(adminSessions).set({ revokedAt: Date.now() }).where(eq(adminSessions.tokenHash, await sha256Hex(raw))).run();
+  c.header("Set-Cookie", clearedCookie(ADMIN_COOKIE, isSecureRequest(c.req.url)));
+  return c.json({ ok: true });
+});
+
+app.use("/v1/admin/overview", authenticatedAdmin);
+app.get("/v1/admin/overview", async (c) => {
+  const db = drizzle(c.env.DB);
+  const usersCount = await db.select({ count: sql<number>`count(*)` }).from(users).get();
+  const activeUsers = await db.select({ count: sql<number>`count(*)` }).from(users).where(eq(users.status, "active")).get();
+  const devices = await db.select().from(users).all();
+  const activeTokens = await db.select({ count: sql<number>`count(*)` }).from(authTokens).where(and(eq(authTokens.kind, "access"), isNull(authTokens.revokedAt), gt(authTokens.expiresAt, Date.now()))).get();
+  return c.json({ users: usersCount?.count ?? 0, activeUsers: activeUsers?.count ?? 0, devices: devices.reduce((total, user) => total + user.deviceIds.length, 0), activeSessions: activeTokens?.count ?? 0 });
+});
+
+app.use("/v1/admin/users", authenticatedAdmin);
+app.get("/v1/admin/users", async (c) => {
+  const db = drizzle(c.env.DB);
+  const query = c.req.query("query")?.trim().toLowerCase();
+  const rows = await db.select().from(users).orderBy(desc(users.registeredAt)).limit(500).all();
+  const filtered = query ? rows.filter((user) => user.email?.toLowerCase().includes(query) || user.displayName.toLowerCase().includes(query) || user.id.includes(query)) : rows;
+  return c.json({ users: filtered.map((user) => ({ id: user.id, email: user.email, displayName: user.displayName, planId: user.planId, status: user.status, deviceCount: user.deviceIds.length, registeredAt: user.registeredAt, lastLoginAt: user.lastLoginAt })) });
+});
+
+app.post("/v1/admin/users", async (c) => {
+  const body = await requestJson(c);
+  const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+  const displayName = typeof body?.displayName === "string" ? body.displayName.trim() : "";
+  const password = body?.password;
+  const planId = typeof body?.planId === "string" ? body.planId : DEFAULT_PLAN_ID;
+  if (!validEmail(email) || displayName.length < 1 || displayName.length > 100 || !validPassword(password)) return c.json({ error: "invalid_user" }, 400);
+  const db = drizzle(c.env.DB);
+  const [duplicate, plan] = await Promise.all([
+    db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1).get(),
+    db.select().from(plans).where(eq(plans.id, planId)).limit(1).get(),
+  ]);
+  if (duplicate) return c.json({ error: "email_already_exists" }, 409);
+  if (!plan) return c.json({ error: "invalid_plan" }, 400);
+  const salt = randomToken(16);
+  const now = Date.now();
+  const id = randomToken(16);
+  await db.insert(users).values({ id, registeredAt: now, email, displayName, passwordHash: await hashPassword(password, salt), passwordSalt: salt, passwordIterations: PASSWORD_ITERATIONS, status: "active", deviceIds: [], planId, revision: 0 }).run();
+  const user = await db.select().from(users).where(eq(users.id, id)).limit(1).get();
+  return c.json({ user: user ? responseUser(user, plan) : undefined }, 201);
+});
+
+app.patch("/v1/admin/users/:id", async (c) => {
+  const id = c.req.param("id");
+  const body = await requestJson(c);
+  const db = drizzle(c.env.DB);
+  const existing = await db.select().from(users).where(eq(users.id, id)).limit(1).get();
+  if (!existing) return c.json({ error: "user_not_found" }, 404);
+  const planId = typeof body?.planId === "string" ? body.planId : undefined;
+  const status = body?.status === "active" || body?.status === "disabled" ? body.status : undefined;
+  const displayName = typeof body?.displayName === "string" ? body.displayName.trim() : undefined;
+  if (planId && !(await db.select({ id: plans.id }).from(plans).where(eq(plans.id, planId)).limit(1).get())) return c.json({ error: "invalid_plan" }, 400);
+  if (displayName !== undefined && (displayName.length < 1 || displayName.length > 100)) return c.json({ error: "invalid_display_name" }, 400);
+  await db.update(users).set({ ...(planId ? { planId } : {}), ...(status ? { status } : {}), ...(displayName === undefined ? {} : { displayName }) }).where(eq(users.id, id)).run();
+  if (status === "disabled") await db.update(authTokens).set({ revokedAt: Date.now() }).where(and(eq(authTokens.userId, id), isNull(authTokens.revokedAt))).run();
+  const updated = await db.select().from(users).where(eq(users.id, id)).limit(1).get();
+  if (!updated) return c.json({ error: "user_not_found" }, 404);
+  return c.json({ user: responseUser(updated, await getPlan(db, updated.planId || DEFAULT_PLAN_ID)) });
+});
+
+app.post("/v1/admin/users/:id/password-reset", async (c) => {
+  const id = c.req.param("id");
+  const body = await requestJson(c);
+  const password = body?.password;
+  if (!validPassword(password)) return c.json({ error: "invalid_password" }, 400);
+  const db = drizzle(c.env.DB);
+  const existing = await db.select({ id: users.id }).from(users).where(eq(users.id, id)).limit(1).get();
+  if (!existing) return c.json({ error: "user_not_found" }, 404);
+  const salt = randomToken(16);
+  await db.update(users).set({ passwordHash: await hashPassword(password, salt), passwordSalt: salt, passwordIterations: PASSWORD_ITERATIONS }).where(eq(users.id, id)).run();
+  await db.update(authTokens).set({ revokedAt: Date.now() }).where(and(eq(authTokens.userId, id), isNull(authTokens.revokedAt))).run();
+  return c.json({ ok: true });
+});
+
 app.use("/v1/sync", async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
-  const authorization = c.req.header("Authorization");
-  const match = authorization?.match(/^Bearer\s+(\S+)$/i);
-  if (!match || match[1].length > MAX_STRING_LENGTH) {
+  const token = bearerOrCookie(c);
+  const account = token ? await userForAccessToken(drizzle(c.env.DB), token) : undefined;
+  if (!account) {
     logEvent("auth_rejected", { route: "/v1/sync", reason: "invalid_bearer" });
     return c.json({ error: "unauthorized" }, 401);
   }
-  const userId = await userIdForToken(match[1]);
-  const limited = await c.env.SYNC_RATE_LIMITER.limit({ key: userId });
+  const limited = await c.env.SYNC_RATE_LIMITER.limit({ key: account.user.id });
   if (!limited.success) {
-    logEvent("rate_limited", { route: "/v1/sync", userIdPrefix: userId.slice(0, 12) });
+    logEvent("rate_limited", { route: "/v1/sync", userIdPrefix: account.user.id.slice(0, 12) });
     return c.json({ error: "rate_limited" }, 429, { "Retry-After": "60" });
   }
-  c.set("userId", userId);
+  c.set("userId", account.user.id);
   return next();
 });
 
