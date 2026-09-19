@@ -155,6 +155,14 @@ async function postSync(settings: SyncSettings, token: string, body: Record<stri
   return fetch(`${settings.syncUrl.replace(/\/+$/, "")}/v1/sync`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
 
+async function syncError(response: Response): Promise<Error> {
+  const body = (await response.json().catch(() => ({}))) as { error?: unknown; message?: unknown };
+  const code = typeof body.error === "string" ? body.error : undefined;
+  const message = typeof body.message === "string" ? body.message : undefined;
+  const detail = message ?? code;
+  return new Error(`同期サーバーエラー: HTTP ${response.status}${detail ? ` (${detail})` : ""}`);
+}
+
 async function performSync(): Promise<SyncResult> {
   const settings = await getSyncSettings();
   if (!settings.syncEnabled) return { enabled: false, uploaded: 0, downloaded: 0, cursor: 0 };
@@ -170,7 +178,7 @@ async function performSync(): Promise<SyncResult> {
     const outbox = await getOutbox(100);
     const response = await postSync(settings, token, { cursor: state.cursor ?? 0, deviceId: settings.syncDeviceId, changes: await Promise.all(outbox.map(toRequestChange)), acknowledgedDeletionIds: state.pendingDeletionIds ?? [] });
     if (response.status === 401) { token = await refreshAccessToken(await getSyncSettings()); continue; }
-    if (!response.ok) throw new Error(`同期サーバーエラー: HTTP ${response.status}`);
+    if (!response.ok) throw await syncError(response);
     const json: unknown = await response.json();
     if (!isResponse(json) || !json.changes.every(isResponseChange)) throw new Error("同期サーバーの応答が不正です");
     const remoteChanges: RemoteChange[] = json.changes.map((change) => ({ itemId: change.itemId, kind: change.kind, operation: change.operation, clientUpdatedAt: change.clientUpdatedAt, deviceId: change.deviceId, payload: change.payload, deletionId: change.deletionId }));
