@@ -3,7 +3,8 @@
 	"name": "mugen-history-and-stars",
 	"main": "backend/index.ts",
 	"assets": {
-		"not_found_handling": "single-page-application"
+		"not_found_handling": "single-page-application",
+		"run_worker_first":["/v1/sync/auth/authorize"]
 	},
 	"compatibility_date": "2026-09-11",
 	"observability": {
