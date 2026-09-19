@@ -4,7 +4,8 @@ export const ACCESS_TOKEN_TTL = 60 * 60 * 1_000;
 export const REFRESH_TOKEN_TTL = 90 * 24 * 60 * 60 * 1_000;
 export const AUTH_CODE_TTL = 5 * 60 * 1_000;
 export const ADMIN_SESSION_TTL = 60 * 60 * 1_000;
-export const PASSWORD_ITERATIONS = 120_000;
+// Cloudflare Workers rejects PBKDF2 requests above 100,000 iterations.
+export const PASSWORD_ITERATIONS = 100_000;
 
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
