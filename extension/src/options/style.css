@@ -94,6 +94,7 @@ label {
 
 input[type="number"],
 input[type="url"],
+input[type="email"],
 input[type="password"],
 input[type="text"] {
   background: var(--surface);
@@ -110,12 +111,16 @@ input[type="text"] {
 
 input[type="number"]:focus,
 input[type="url"]:focus,
+input[type="email"]:focus,
 input[type="password"]:focus,
 input[type="text"]:focus {
   border-color: var(--accent);
 }
 
 input[type="url"] {
+  width: 100%;
+}
+input[type="email"] {
   width: 100%;
 }
 input[type="password"],

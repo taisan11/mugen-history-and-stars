@@ -94,12 +94,25 @@ export async function clearAuthTokens(): Promise<void> {
   await browser.storage.local.remove(["authAccessToken", "authRefreshToken", "authAccessExpiresAt", "authUser"]);
 }
 
-export function requestLogin(): Promise<{ started: boolean }> {
-  return browser.runtime.sendMessage({ type: "START_AUTH" }).then((value) => {
-    const result = value as { started?: boolean; error?: string };
-    if (result.error || !result.started) throw new Error(result.error ?? "ログインを開始できませんでした");
-    return { started: true };
+export async function loginWithPassword(email: string, password: string): Promise<void> {
+  const settings = await getSyncSettings();
+  if (!validUrl(settings.syncUrl)) throw new Error("先に正しいサーバーURLを保存してください");
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail || !password) throw new Error("メールアドレスとパスワードを入力してください");
+  const response = await fetch(`${settings.syncUrl.replace(/\/+$/, "")}/v1/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: normalizedEmail, password, client: "extension" }),
   });
+  const json = (await response.json().catch(() => ({}))) as Partial<AuthResponse> & { error?: string };
+  if (!response.ok) {
+    if (response.status === 401) throw new Error("メールアドレスまたはパスワードが正しくありません");
+    throw new Error(typeof json.error === "string" ? json.error : `ログインに失敗しました（HTTP ${response.status}）`);
+  }
+  if (typeof json.accessToken !== "string" || typeof json.refreshToken !== "string" || typeof json.accessExpiresAt !== "number" || typeof json.refreshExpiresAt !== "number" || !json.user) {
+    throw new Error("認証サーバーの応答が不正です");
+  }
+  await saveAuthTokens(json as AuthResponse);
 }
 
 export function requestSync(): Promise<SyncResult> {

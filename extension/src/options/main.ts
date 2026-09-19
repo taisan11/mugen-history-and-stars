@@ -11,7 +11,7 @@ import {
 import { getBookmarkFolders, saveBookmarkFolders } from "../bookmark-folders.ts";
 import {
   getSyncSettings,
-  requestLogin,
+  loginWithPassword,
   requestSync,
   saveSyncSettings,
   type SyncResult,
@@ -242,9 +242,13 @@ async function init() {
     </div>
     <div class="setting sync-setting">
       <h2>同期</h2>
-      <p>管理者から発行されたアカウントでログインすると、履歴とブックマークを同期できます。</p>
+      <p>管理者から発行されたアカウントのメールアドレスとパスワードでログインすると、履歴とブックマークを同期できます。</p>
       <label for="sync-url">サーバーURL</label>
       <input type="url" id="sync-url" placeholder="https://example.com" value="${escapeHtml(syncSettings.syncUrl)}" />
+      <label for="sync-email">メールアドレス</label>
+      <input type="email" id="sync-email" autocomplete="username" value="${escapeHtml(syncSettings.authUser?.email ?? "")}" />
+      <label for="sync-password">パスワード</label>
+      <input type="password" id="sync-password" autocomplete="current-password" />
       <div class="sync-actions">
         <button type="button" id="save-sync">保存</button>
         <button type="button" id="login-sync">ログイン</button>
@@ -340,6 +344,8 @@ async function init() {
   });
 
   const syncUrl = document.querySelector<HTMLInputElement>("#sync-url")!;
+  const syncEmail = document.querySelector<HTMLInputElement>("#sync-email")!;
+  const syncPassword = document.querySelector<HTMLInputElement>("#sync-password")!;
   const saveSyncButton = document.querySelector<HTMLButtonElement>("#save-sync")!;
   const loginSyncButton = document.querySelector<HTMLButtonElement>("#login-sync")!;
   const syncNowButton = document.querySelector<HTMLButtonElement>("#sync-now")!;
@@ -347,13 +353,14 @@ async function init() {
 
   loginSyncButton.addEventListener("click", async () => {
     loginSyncButton.disabled = true;
-    syncStatus.textContent = "ログイン画面を開いています…";
+    syncStatus.textContent = "ログインしています…";
     try {
       await saveSyncSettings(syncUrl.value.trim());
-      await requestLogin();
-      syncStatus.textContent = "ログイン完了後、この画面で同期できます。";
+      await loginWithPassword(syncEmail.value, syncPassword.value);
+      syncPassword.value = "";
+      syncStatus.textContent = "ログインしました。この端末で同期できます。";
     } catch (error) {
-      syncStatus.textContent = error instanceof Error ? error.message : "ログイン画面を開けませんでした";
+      syncStatus.textContent = error instanceof Error ? error.message : "ログインに失敗しました";
     } finally {
       loginSyncButton.disabled = false;
     }
