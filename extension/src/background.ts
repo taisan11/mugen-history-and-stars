@@ -8,7 +8,7 @@ import {
   updateVisitMetadata,
   type BookmarkEntry,
 } from "./db.ts";
-import { syncNow, type SyncResult } from "./sync.ts";
+import { getSyncSettings, saveAuthTokens, syncNow, type SyncResult } from "./sync.ts";
 // import { extensionApi } from "./extension-api.ts";
 
 const ALLOWED_SCHEMES = ["http://", "https://", "file://"];
@@ -71,6 +71,47 @@ const tabMetadata = new Map<number, { url: string; title: string; favicon: strin
 const MAX_OMNIBOX_SUGGESTIONS = 6;
 let omniboxRequestId = 0;
 let omniboxCache: { items: BookmarkEntry[]; expiresAt: number } | undefined;
+
+type AuthPending = { state: string; verifier: string; redirectUri: string; serverUrl: string; tabId?: number };
+
+function authBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function authRandom(byteLength = 32): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return authBase64Url(bytes);
+}
+
+async function startAuth(): Promise<{ started: boolean }> {
+  const settings = await getSyncSettings();
+  if (!settings.syncUrl) throw new Error("先にサーバーURLを保存してください");
+  const verifier = authRandom(32);
+  const challenge = authBase64Url(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier))));
+  const state = authRandom(24);
+  const redirectUri = browser.runtime.getURL("auth/callback.html");
+  const query = new URLSearchParams({ client_id: "extension", redirect_uri: redirectUri, response_type: "code", code_challenge: challenge, code_challenge_method: "S256", state });
+  const tab = await browser.tabs.create({ url: `${settings.syncUrl.replace(/\/+$/, "")}/auth/authorize?${query.toString()}` });
+  await browser.storage.local.set({ authPending: { state, verifier, redirectUri, serverUrl: settings.syncUrl, tabId: tab.id } satisfies AuthPending });
+  return { started: true };
+}
+
+async function finishAuth(code: string, state: string): Promise<{ ok: boolean }> {
+  const data = (await browser.storage.local.get("authPending")) as { authPending?: AuthPending };
+  const pending = data.authPending;
+  if (!pending || pending.state !== state) throw new Error("認証stateが一致しません");
+  const response = await fetch(`${pending.serverUrl.replace(/\/+$/, "")}/v1/auth/token`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ clientId: "extension", redirectUri: pending.redirectUri, code, codeVerifier: pending.verifier }) });
+  if (!response.ok) throw new Error("認証codeを交換できませんでした");
+  const json = (await response.json()) as { accessToken?: string; refreshToken?: string; accessExpiresAt?: number; user?: unknown };
+  if (!json.accessToken || !json.refreshToken || !json.accessExpiresAt || !json.user) throw new Error("認証応答が不正です");
+  await saveAuthTokens(json as Parameters<typeof saveAuthTokens>[0]);
+  await browser.storage.local.remove("authPending");
+  if (pending.tabId !== undefined) await browser.tabs.remove(pending.tabId).catch(() => undefined);
+  return { ok: true };
+}
 
 async function loadActionIcon(path: string): Promise<ImageData> {
   const response = await fetch(browser.runtime.getURL(path));
@@ -355,6 +396,14 @@ browser.omnibox.onInputEntered.addListener((text, disposition) => {
 });
 
 browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === "START_AUTH") {
+    void startAuth().then(sendResponse, (error: unknown) => sendResponse({ error: error instanceof Error ? error.message : "ログインを開始できませんでした" }));
+    return true;
+  }
+  if (msg.type === "AUTH_CALLBACK") {
+    void finishAuth(msg.code, msg.state).then(sendResponse, (error: unknown) => sendResponse({ error: error instanceof Error ? error.message : "ログインに失敗しました" }));
+    return true;
+  }
   if (isPageMetadataMessage(msg)) {
     void handlePageMetadata(msg, sender).then(
       () => sendResponse({ ok: true }),

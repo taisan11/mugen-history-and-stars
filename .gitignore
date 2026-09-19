@@ -13,6 +13,9 @@ dist-ssr
 **/.wrangler
 *.local
 *.tsbuildinfo
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*

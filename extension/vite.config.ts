@@ -69,6 +69,7 @@ export default defineConfig({
         history: resolve(import.meta.dirname, "src/history/index.html"),
         options: resolve(import.meta.dirname, "src/options/index.html"),
         bookmarks: resolve(import.meta.dirname, "src/bookmarks/index.html"),
+        auth: resolve(import.meta.dirname, "src/auth/callback.html"),
       },
     },
   },

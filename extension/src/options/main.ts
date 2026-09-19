@@ -10,8 +10,8 @@ import {
 } from "../db.ts";
 import { getBookmarkFolders, saveBookmarkFolders } from "../bookmark-folders.ts";
 import {
-  generateSyncSecret,
   getSyncSettings,
+  requestLogin,
   requestSync,
   saveSyncSettings,
   type SyncResult,
@@ -242,16 +242,12 @@ async function init() {
     </div>
     <div class="setting sync-setting">
       <h2>同期</h2>
-      <p>同期秘密鍵はサーバーへ送信されません。同期する端末間で同じ秘密鍵を設定してください。</p>
+      <p>管理者から発行されたアカウントでログインすると、履歴とブックマークを同期できます。</p>
       <label for="sync-url">サーバーURL</label>
       <input type="url" id="sync-url" placeholder="https://example.com" value="${escapeHtml(syncSettings.syncUrl)}" />
-      <label for="sync-secret">同期秘密鍵</label>
-      <div class="secret-row">
-        <input type="password" id="sync-secret" autocomplete="off" value="${escapeHtml(syncSettings.syncSecret)}" />
-        <button type="button" id="generate-secret">生成</button>
-      </div>
       <div class="sync-actions">
         <button type="button" id="save-sync">保存</button>
+        <button type="button" id="login-sync">ログイン</button>
         <button type="button" id="sync-now">今すぐ同期</button>
       </div>
       <div id="sync-status" role="status" aria-live="polite"></div>
@@ -344,15 +340,23 @@ async function init() {
   });
 
   const syncUrl = document.querySelector<HTMLInputElement>("#sync-url")!;
-  const syncSecret = document.querySelector<HTMLInputElement>("#sync-secret")!;
-  const generateButton = document.querySelector<HTMLButtonElement>("#generate-secret")!;
   const saveSyncButton = document.querySelector<HTMLButtonElement>("#save-sync")!;
+  const loginSyncButton = document.querySelector<HTMLButtonElement>("#login-sync")!;
   const syncNowButton = document.querySelector<HTMLButtonElement>("#sync-now")!;
   const syncStatus = document.querySelector<HTMLDivElement>("#sync-status")!;
 
-  generateButton.addEventListener("click", () => {
-    syncSecret.value = generateSyncSecret();
-    syncSecret.type = "text";
+  loginSyncButton.addEventListener("click", async () => {
+    loginSyncButton.disabled = true;
+    syncStatus.textContent = "ログイン画面を開いています…";
+    try {
+      await saveSyncSettings(syncUrl.value.trim());
+      await requestLogin();
+      syncStatus.textContent = "ログイン完了後、この画面で同期できます。";
+    } catch (error) {
+      syncStatus.textContent = error instanceof Error ? error.message : "ログイン画面を開けませんでした";
+    } finally {
+      loginSyncButton.disabled = false;
+    }
   });
 
   const runSync = async () => {
@@ -375,7 +379,7 @@ async function init() {
     saveSyncButton.disabled = true;
     syncStatus.textContent = "設定を保存しています…";
     try {
-      await saveSyncSettings(syncUrl.value.trim(), syncSecret.value);
+      await saveSyncSettings(syncUrl.value.trim());
       syncStatus.textContent = syncMessage(await requestSync());
     } catch (error) {
       console.error("Failed to save sync settings", error);

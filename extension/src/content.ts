@@ -8,6 +8,13 @@ type PageMetadataMessage = {
   navigation: boolean;
 };
 
+window.addEventListener("message", (event: MessageEvent<unknown>) => {
+  if (event.source !== window || typeof event.data !== "object" || event.data === null) return;
+  const message = event.data as { type?: unknown };
+  if (message.type !== "MUGEN_HISTORY_LOGIN") return;
+  void browser.runtime.sendMessage({ type: "START_AUTH" }).catch(() => undefined);
+});
+
 // Keep the observer deliberately small: one title/head observer and one
 // debounced message per meaningful change. This covers frameworks that update
 // document.title asynchronously without polling the DOM.
