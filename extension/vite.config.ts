@@ -10,6 +10,12 @@ export default defineConfig({
         manifest_version: 3,
         name: `Mugen History and Stars (${browser})`,
         version: "1.0.0",
+        web_accessible_resources: [
+          {
+            resources: ["auth/callback.html"],
+            matches: ["https://mugengen.taisan11.dev/*"],
+          },
+        ],
         background:
           browser === "chrome"
             ? { service_worker: "src/background.ts", type: "module" }
