@@ -75,6 +75,9 @@ const MAX_CHANGES = 100;
 const MAX_RESPONSE_CHANGES = 500;
 const MAX_BODY_BYTES = 1_048_576;
 const MAX_STRING_LENGTH = 512;
+const MAX_URL_LENGTH = 8_192;
+const MAX_TITLE_LENGTH = 2_048;
+const MAX_FAVICON_LENGTH = 65_536;
 const SERVER_DEVICE_ID = "\uffff";
 const MAX_HISTORY_PRUNE_PER_SYNC = 1_000;
 const DEFAULT_PLAN_ID = "free";
@@ -262,7 +265,7 @@ function isTimestamp(value: unknown): value is number {
 
 function validPayload(kind: SyncKind, value: unknown): value is ChangePayload {
   if (!isRecord(value)) return false;
-  if (!isBoundedString(value.url) || !isNullableString(value.favicon)) return false;
+  if (!isBoundedString(value.url, MAX_URL_LENGTH) || !isNullableString(value.favicon, MAX_FAVICON_LENGTH)) return false;
   if (kind === "bookmark") {
     return (
       isBoundedString(value.name) &&
@@ -271,7 +274,7 @@ function validPayload(kind: SyncKind, value: unknown): value is ChangePayload {
       value.folder.length <= MAX_STRING_LENGTH
     );
   }
-  return isNullableString(value.title) && isTimestamp(value.visitedAt);
+  return isNullableString(value.title, MAX_TITLE_LENGTH) && isTimestamp(value.visitedAt);
 }
 
 function validateChange(value: unknown): value is IncomingChange {
