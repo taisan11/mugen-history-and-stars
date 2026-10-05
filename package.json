@@ -15,8 +15,8 @@
     "db:mg": "bun run --filter '@mugen-history-and-stars/server' db:mg"
   },
   "devDependencies": {
-    "oxfmt": "^0.68.0",
-    "oxlint": "^1.83.0",
+    "oxfmt": "^0.71.0",
+    "oxlint": "^1.86.0",
     "typescript": "~7.0.2"
   }
 }

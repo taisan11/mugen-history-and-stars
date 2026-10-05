@@ -8,9 +8,8 @@ type PageMetadataMessage = {
   navigation: boolean;
 };
 
-// Keep the observer deliberately small: one title/head observer and one
-// debounced message per meaningful change. This covers frameworks that update
-// document.title asynchronously without polling the DOM.
+// Observe only metadata-bearing elements. Watching the whole head subtree can
+// be noisy on pages that frequently update unrelated meta/style elements.
 let lastSent: Omit<PageMetadataMessage, "type"> | undefined;
 let pendingNavigation = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -72,21 +71,76 @@ for (const method of ["pushState", "replaceState"] as const) {
 window.addEventListener("popstate", onHistoryChange, { passive: true });
 window.addEventListener("hashchange", onHistoryChange, { passive: true });
 
-const observeOptions: MutationObserverInit = {
-  subtree: true,
-  childList: true,
-  characterData: true,
-};
-const titleObserver = new MutationObserver(() => scheduleMetadata());
+function isFaviconLink(node: Element): node is HTMLLinkElement {
+  if (node.tagName !== "LINK") return false;
+  const rel = node.getAttribute("rel")?.toLowerCase().split(/\s+/) ?? [];
+  return rel.includes("icon") || (rel.includes("shortcut") && rel.includes("icon"));
+}
+
+let observedHead: HTMLHeadElement | null = null;
+const metadataObserver = new MutationObserver(() => scheduleMetadata());
+const headObserver = new MutationObserver((records) => {
+  // Direct head children are enough to discover titles and link elements.
+  const changed = records.flatMap((record) => [...record.addedNodes, ...record.removedNodes]);
+  if (changed.some((node) => node instanceof Element && (node.tagName === "TITLE" || node.tagName === "LINK"))) {
+    observeMetadataElements();
+    if (changed.some((node) => node instanceof Element && (node.tagName === "TITLE" || isFaviconLink(node)))) {
+      scheduleMetadata();
+    }
+  }
+});
+const linkObserver = new MutationObserver((records) => {
+  if (
+    records.some(
+      (record) =>
+        (record.attributeName === "href" && isFaviconLink(record.target as Element)) ||
+        (record.attributeName === "rel" &&
+          (isFaviconLink(record.target as Element) ||
+            /(?:^|\s)(?:shortcut\s+)?icon(?:\s|$)/i.test(record.oldValue ?? ""))),
+    )
+  ) {
+    scheduleMetadata();
+  }
+});
+
+function observeMetadataElements(): void {
+  const head = document.head;
+  if (!head) return;
+  if (observedHead !== head) {
+    headObserver.disconnect();
+    observedHead = head;
+    headObserver.observe(head, { childList: true });
+  }
+
+  // Rebinding is cheap and only occurs when relevant direct children change.
+  metadataObserver.disconnect();
+  linkObserver.disconnect();
+  const title = head.querySelector("title");
+  if (title) {
+    metadataObserver.observe(title, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  }
+  for (const link of head.querySelectorAll("link")) {
+    linkObserver.observe(link, {
+      attributes: true,
+      attributeFilter: ["href", "rel"],
+      attributeOldValue: true,
+    });
+  }
+}
+
 if (document.head) {
-  titleObserver.observe(document.head, observeOptions);
+  observeMetadataElements();
 } else {
-  // document_start can run before <head> exists. Watch only document-level
-  // insertion until it does, then switch to the much smaller head subtree.
+  // document_start can run before <head> exists. Watch only until it appears,
+  // then switch to the focused observers above.
   const rootObserver = new MutationObserver(() => {
     if (!document.head) return;
     rootObserver.disconnect();
-    titleObserver.observe(document.head, observeOptions);
+    observeMetadataElements();
   });
   rootObserver.observe(document, { childList: true });
 }

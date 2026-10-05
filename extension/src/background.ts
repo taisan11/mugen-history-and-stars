@@ -232,17 +232,27 @@ async function openOmniboxResult(
 
 async function saveVisitFromTab(tabId: number, tab: ActionTab): Promise<void> {
   if (!tab.url || !ALLOWED_SCHEMES.some((scheme) => tab.url!.startsWith(scheme))) return;
+  const title = tab.title?.trim() ?? "";
+  const favicon = tab.favIconUrl ?? "";
+  // A content-script navigation message can arrive before tabs.onUpdated
+  // reports completion. Treat completion as metadata for that same navigation,
+  // while a new loading cycle (including a reload) is recorded separately.
+  if (tabUrls.get(tabId) === tab.url) {
+    await updateVisitMetadata(tab.url, { title, favicon });
+    tabMetadata.set(tabId, { url: tab.url, title, favicon });
+    return;
+  }
   await addVisit({
     url: tab.url,
-    title: tab.title?.trim() ?? "",
-    favicon: tab.favIconUrl ?? "",
+    title,
+    favicon,
     visitedAt: Date.now(),
   });
   tabUrls.set(tabId, tab.url);
   tabMetadata.set(tabId, {
     url: tab.url,
-    title: tab.title?.trim() ?? "",
-    favicon: tab.favIconUrl ?? "",
+    title,
+    favicon,
   });
 }
 
@@ -271,37 +281,44 @@ async function handlePageMetadata(
   const metadataResult = await updateVisitMetadata(message.url, { title, favicon });
   if (metadataResult === "missing") {
     await addVisit({ url: message.url, title, favicon, visitedAt: Date.now() });
+    tabUrls.set(tabId, message.url);
     scheduleSyncInBackground();
   } else if (metadataResult === "updated") {
     scheduleSyncInBackground();
   }
-  tabUrls.set(tabId, message.url);
   tabMetadata.set(tabId, { url: message.url, title, favicon });
 }
 
-browser.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (!tab.url || !ALLOWED_SCHEMES.some((s) => tab.url!.startsWith(s))) {
-    await hidePageAction(tabId);
-    return;
-  }
+browser.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  void (async () => {
+    if (changeInfo.status === "loading") {
+      tabUrls.delete(tabId);
+      tabMetadata.delete(tabId);
+    }
 
-  if (changeInfo.status === "complete") {
-    await saveVisitFromTab(tabId, tab);
-    scheduleSyncInBackground();
-  } else if (changeInfo.title !== undefined) {
-    const metadataResult = await updateVisitMetadata(tab.url, { title: changeInfo.title });
-    const metadata = tabMetadata.get(tabId);
-    tabMetadata.set(tabId, {
-      url: tab.url,
-      title: changeInfo.title.trim(),
-      favicon: metadata?.url === tab.url ? metadata.favicon : (tab.favIconUrl ?? ""),
-    });
-    if (metadataResult === "updated") scheduleSyncInBackground();
-  }
+    if (!tab.url || !ALLOWED_SCHEMES.some((s) => tab.url!.startsWith(s))) {
+      await hidePageAction(tabId);
+      return;
+    }
 
-  if (tab.url && (changeInfo.url || changeInfo.status === "complete")) {
-    await updatePageAction(tabId, tab.url);
-  }
+    if (changeInfo.status === "complete") {
+      await saveVisitFromTab(tabId, tab);
+      scheduleSyncInBackground();
+    } else if (changeInfo.title !== undefined) {
+      const metadataResult = await updateVisitMetadata(tab.url, { title: changeInfo.title });
+      const metadata = tabMetadata.get(tabId);
+      tabMetadata.set(tabId, {
+        url: tab.url,
+        title: changeInfo.title.trim(),
+        favicon: metadata?.url === tab.url ? metadata.favicon : (tab.favIconUrl ?? ""),
+      });
+      if (metadataResult === "updated") scheduleSyncInBackground();
+    }
+
+    if (tab.url && (changeInfo.url || changeInfo.status === "complete")) {
+      await updatePageAction(tabId, tab.url);
+    }
+  })().catch((error: unknown) => console.error("Failed to record browsing history", error));
 });
 
 browser.tabs.onRemoved.addListener((tabId) => {

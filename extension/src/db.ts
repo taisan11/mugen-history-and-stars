@@ -108,20 +108,35 @@ function openDB(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      const visits = db.createObjectStore("visits", { keyPath: "id", autoIncrement: true });
-      visits.createIndex("url", "url", { unique: false });
-      visits.createIndex("visitedAt", "visitedAt", { unique: false });
-      visits.createIndex("syncId", "syncId", { unique: true });
+      const tx = request.transaction!;
+      const visits = db.objectStoreNames.contains("visits")
+        ? tx.objectStore("visits")
+        : db.createObjectStore("visits", { keyPath: "id", autoIncrement: true });
+      if (!visits.indexNames.contains("url")) visits.createIndex("url", "url", { unique: false });
+      if (!visits.indexNames.contains("visitedAt"))
+        visits.createIndex("visitedAt", "visitedAt", { unique: false });
+      if (!visits.indexNames.contains("syncId"))
+        visits.createIndex("syncId", "syncId", { unique: true });
 
-      const bookmarks = db.createObjectStore("bookmarks", { keyPath: "id", autoIncrement: true });
-      bookmarks.createIndex("url", "url", { unique: false });
-      bookmarks.createIndex("createdAt", "createdAt", { unique: false });
-      bookmarks.createIndex("syncId", "syncId", { unique: true });
+      const bookmarks = db.objectStoreNames.contains("bookmarks")
+        ? tx.objectStore("bookmarks")
+        : db.createObjectStore("bookmarks", { keyPath: "id", autoIncrement: true });
+      if (!bookmarks.indexNames.contains("url"))
+        bookmarks.createIndex("url", "url", { unique: false });
+      if (!bookmarks.indexNames.contains("createdAt"))
+        bookmarks.createIndex("createdAt", "createdAt", { unique: false });
+      if (!bookmarks.indexNames.contains("syncId"))
+        bookmarks.createIndex("syncId", "syncId", { unique: true });
 
-      const outbox = db.createObjectStore("sync_outbox", { keyPath: "operationId" });
-      outbox.createIndex("itemId", "itemId", { unique: false });
-      outbox.createIndex("clientUpdatedAt", "clientUpdatedAt", { unique: false });
-      db.createObjectStore("sync_state", { keyPath: "key" });
+      const outbox = db.objectStoreNames.contains("sync_outbox")
+        ? tx.objectStore("sync_outbox")
+        : db.createObjectStore("sync_outbox", { keyPath: "operationId" });
+      if (!outbox.indexNames.contains("itemId"))
+        outbox.createIndex("itemId", "itemId", { unique: false });
+      if (!outbox.indexNames.contains("clientUpdatedAt"))
+        outbox.createIndex("clientUpdatedAt", "clientUpdatedAt", { unique: false });
+      if (!db.objectStoreNames.contains("sync_state"))
+        db.createObjectStore("sync_state", { keyPath: "key" });
     };
     request.onsuccess = () => {
       const db = request.result;

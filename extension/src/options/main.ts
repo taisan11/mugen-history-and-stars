@@ -5,6 +5,7 @@ import {
   getAllBookmarks,
   getAllVisits,
   resetDatabase,
+  resetSyncState,
   updateBookmark,
   type BookmarkInput,
 } from "../db.ts";
@@ -250,7 +251,7 @@ async function init() {
       <label for="sync-password">パスワード</label>
       <input type="password" id="sync-password" autocomplete="current-password" />
       <div class="sync-actions">
-        <button type="button" id="save-sync">保存</button>
+        <button type="button" id="reset-sync" class="danger">同期設定をリセット</button>
         <button type="button" id="login-sync">ログイン</button>
         <button type="button" id="sync-now">今すぐ同期</button>
       </div>
@@ -346,7 +347,7 @@ async function init() {
   const syncUrl = document.querySelector<HTMLInputElement>("#sync-url")!;
   const syncEmail = document.querySelector<HTMLInputElement>("#sync-email")!;
   const syncPassword = document.querySelector<HTMLInputElement>("#sync-password")!;
-  const saveSyncButton = document.querySelector<HTMLButtonElement>("#save-sync")!;
+  const resetSyncButton = document.querySelector<HTMLButtonElement>("#reset-sync")!;
   const loginSyncButton = document.querySelector<HTMLButtonElement>("#login-sync")!;
   const syncNowButton = document.querySelector<HTMLButtonElement>("#sync-now")!;
   const syncStatus = document.querySelector<HTMLDivElement>("#sync-status")!;
@@ -382,18 +383,31 @@ async function init() {
   syncNowButton.addEventListener("click", () => {
     void runSync();
   });
-  saveSyncButton.addEventListener("click", async () => {
-    saveSyncButton.disabled = true;
-    syncStatus.textContent = "設定を保存しています…";
+  resetSyncButton.addEventListener("click", async () => {
+    if (!window.confirm("同期URLとログイン情報を削除し、同期設定をリセットします。履歴とブックマークは削除されません。")) return;
+    resetSyncButton.disabled = true;
+    syncStatus.textContent = "同期設定をリセットしています…";
     try {
-      await saveSyncSettings(syncUrl.value.trim());
-      syncStatus.textContent = syncMessage(await requestSync());
+      await browser.storage.local.remove([
+        "syncUrl",
+        "syncDeviceId",
+        "syncEnabled",
+        "authAccessToken",
+        "authRefreshToken",
+        "authAccessExpiresAt",
+        "authUser",
+      ]);
+      await resetSyncState(true);
+      syncUrl.value = "";
+      syncEmail.value = "";
+      syncPassword.value = "";
+      syncStatus.textContent = "同期設定をリセットしました。履歴とブックマークは保持されています。";
     } catch (error) {
-      console.error("Failed to save sync settings", error);
+      console.error("Failed to reset sync settings", error);
       syncStatus.textContent =
-        error instanceof Error ? error.message : "同期設定の保存に失敗しました";
+        error instanceof Error ? error.message : "同期設定のリセットに失敗しました";
     } finally {
-      saveSyncButton.disabled = false;
+      resetSyncButton.disabled = false;
     }
   });
 }
