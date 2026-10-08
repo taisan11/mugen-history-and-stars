@@ -1,4 +1,5 @@
 // import { extensionApi } from "./extension-api.ts";
+import { filterGoogleUrl, getGoogleUrlFilterEnabled } from "./url-filter.ts";
 
 const DB_NAME = "mugen-history";
 const DB_VERSION = 3;
@@ -223,6 +224,10 @@ function nextUpdatedAt(current: number | undefined): number {
 export async function addVisit(
   entry: Omit<HistoryEntry, "id" | "syncId" | "updatedAt" | "updatedBy">,
 ): Promise<void> {
+  const normalizedEntry = {
+    ...entry,
+    url: filterGoogleUrl(entry.url, await getGoogleUrlFilterEnabled()),
+  };
   const info = await getSyncInfo();
   const db = await openDB();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
@@ -233,7 +238,7 @@ export async function addVisit(
   );
   const last = lastCursor?.value as HistoryEntry | undefined;
   const updatedAt = nextUpdatedAt(last?.updatedAt);
-  if (last && last.url === entry.url) {
+  if (last && last.url === normalizedEntry.url) {
     store.delete(last.id!);
     if (info) {
       putOutbox(
@@ -250,9 +255,9 @@ export async function addVisit(
     }
   }
   const record: HistoryEntry = {
-    ...entry,
+    ...normalizedEntry,
     syncId: uuid(),
-    updatedAt: last && last.url === entry.url ? updatedAt + 1 : updatedAt,
+    updatedAt: last && last.url === normalizedEntry.url ? updatedAt + 1 : updatedAt,
     updatedBy: info?.deviceId ?? "",
   };
   store.add(record);
@@ -264,6 +269,11 @@ export async function addVisits(
   entries: Array<Omit<HistoryEntry, "id" | "syncId" | "updatedAt" | "updatedBy">>,
 ): Promise<void> {
   if (entries.length === 0) return;
+  const filterEnabled = await getGoogleUrlFilterEnabled();
+  entries = entries.map((entry) => ({
+    ...entry,
+    url: filterGoogleUrl(entry.url, filterEnabled),
+  }));
   const info = await getSyncInfo();
   const db = await openDB();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
@@ -298,6 +308,7 @@ export async function updateVisitMetadata(
   url: string,
   changes: Partial<Pick<HistoryEntry, "title" | "favicon">>,
 ): Promise<"updated" | "unchanged" | "missing"> {
+  url = filterGoogleUrl(url, await getGoogleUrlFilterEnabled());
   const info = await getSyncInfo();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
   const db = await openDB();

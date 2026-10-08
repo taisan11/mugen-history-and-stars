@@ -10,6 +10,7 @@ import {
   type BookmarkInput,
 } from "../db.ts";
 import { getBookmarkFolders, saveBookmarkFolders } from "../bookmark-folders.ts";
+import { filterGoogleUrl, getGoogleUrlFilterEnabled } from "../url-filter.ts";
 import {
   getSyncSettings,
   loginWithPassword,
@@ -145,11 +146,14 @@ async function importBrowserHistory(): Promise<{
   duplicates: number;
   unsupported: number;
 }> {
-  const [items, existing] = await Promise.all([
+  const [items, existing, filterEnabled] = await Promise.all([
     browser.history.search({ text: "", startTime: 0, maxResults: 100000 }),
     getAllVisits(),
+    getGoogleUrlFilterEnabled(),
   ]);
-  const known = new Set(existing.map((entry) => `${entry.url}\u0000${entry.visitedAt}`));
+  const known = new Set(
+    existing.map((entry) => `${filterGoogleUrl(entry.url, filterEnabled)}\u0000${entry.visitedAt}`),
+  );
   const entries: Array<{ url: string; title: string; favicon: string; visitedAt: number }> = [];
   let duplicates = 0;
   let unsupported = 0;
@@ -167,14 +171,15 @@ async function importBrowserHistory(): Promise<{
           let itemDuplicates = 0;
           for (const visit of visits) {
             const visitedAt = visit.visitTime ?? item.lastVisitTime;
-            const key = `${item.url}\u0000${visitedAt}`;
+            const url = filterGoogleUrl(item.url, filterEnabled);
+            const key = `${url}\u0000${visitedAt}`;
             if (known.has(key)) {
               itemDuplicates++;
               continue;
             }
             known.add(key);
             imported.push({
-              url: item.url,
+              url,
               title: item.title || item.url,
               favicon: "",
               visitedAt,
@@ -204,7 +209,11 @@ function syncMessage(result: SyncResult): string {
 }
 
 async function init() {
-  const [{ perPage }, syncSettings] = await Promise.all([getStorage(), getSyncSettings()]);
+  const [{ perPage }, syncSettings, googleUrlFilterEnabled] = await Promise.all([
+    getStorage(),
+    getSyncSettings(),
+    getGoogleUrlFilterEnabled(),
+  ]);
 
   app.innerHTML = `
     <nav class="page-nav" aria-label="ページ">
@@ -216,6 +225,14 @@ async function init() {
     <div class="setting">
       <label for="perPage">1ページあたりの履歴件数</label>
       <input type="number" id="perPage" min="10" max="${MAX_PER_PAGE}" step="10" value="${perPage}" />
+    </div>
+    <div class="setting url-filter-setting">
+      <h2>URLフィルター</h2>
+      <label class="toggle-setting" for="google-url-filter">
+        <input type="checkbox" id="google-url-filter" ${googleUrlFilterEnabled ? "checked" : ""} />
+        www.google.com の不要な URL パラメーターを除外する
+      </label>
+      <p>検索語や検索種別などを残し、その他のパラメーターを除外して履歴の重複を抑えます。</p>
     </div>
     <div class="setting backup-setting">
       <h2>バックアップ</h2>
@@ -267,6 +284,15 @@ async function init() {
     const val = Math.max(10, Math.min(MAX_PER_PAGE, Number(input.value) || DEFAULT_PER_PAGE));
     input.value = String(val);
     await setStorage({ perPage: val });
+    status.textContent = "保存しました";
+    setTimeout(() => {
+      status.textContent = "";
+    }, 1500);
+  });
+
+  document.querySelector<HTMLInputElement>("#google-url-filter")!.addEventListener("change", async (event) => {
+    const enabled = (event.currentTarget as HTMLInputElement).checked;
+    await browser.storage.local.set({ googleUrlFilterEnabled: enabled });
     status.textContent = "保存しました";
     setTimeout(() => {
       status.textContent = "";
