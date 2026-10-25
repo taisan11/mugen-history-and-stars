@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "devDependencies": {
-    "@taisan11/vite-plugin-webext": "^0.6.1",
-    "vite": "^8.3.2"
+    "@taisan11/vite-plugin-webext": "^0.6.5",
+    "vite": "^8.3.5"
   }
 }

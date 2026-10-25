@@ -1,5 +1,6 @@
 // import { extensionApi } from "./extension-api.ts";
 import { filterGoogleUrl, getGoogleUrlFilterEnabled } from "./url-filter.ts";
+import { createDatabaseConnection } from "./database-connection.ts";
 
 const DB_NAME = "mugen-history";
 const DB_VERSION = 3;
@@ -101,11 +102,10 @@ browser.storage.onChanged.addListener((changes, areaName) => {
     syncInfoPromise = undefined;
 });
 
-let dbPromise: Promise<IDBDatabase> | undefined;
+const database = createDatabaseConnection(openDB);
 
 function openDB(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
@@ -139,28 +139,13 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains("sync_state"))
         db.createObjectStore("sync_state", { keyPath: "key" });
     };
-    request.onsuccess = () => {
-      const db = request.result;
-      // Keep one connection alive for the lifetime of this extension context.
-      // Opening IndexedDB is surprisingly expensive on every navigation.
-      db.onversionchange = () => {
-        db.close();
-        dbPromise = undefined;
-      };
-      resolve(db);
-    };
-    request.onerror = () => {
-      dbPromise = undefined;
-      reject(request.error);
-    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
   });
-  return dbPromise;
 }
 
 export async function resetDatabase(): Promise<void> {
-  const db = await dbPromise?.catch(() => undefined);
-  db?.close();
-  dbPromise = undefined;
+  await database.close();
   await new Promise<void>((resolve, reject) => {
     const request = indexedDB.deleteDatabase(DB_NAME);
     request.onsuccess = () => resolve();
@@ -229,9 +214,8 @@ export async function addVisit(
     url: filterGoogleUrl(entry.url, await getGoogleUrlFilterEnabled()),
   };
   const info = await getSyncInfo();
-  const db = await openDB();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
-  const tx = db.transaction(stores, "readwrite");
+  const tx = await database.transaction(stores, "readwrite");
   const store = tx.objectStore("visits");
   const lastCursor = await requestResult<IDBCursorWithValue | null>(
     store.index("visitedAt").openCursor(null, "prev"),
@@ -275,9 +259,8 @@ export async function addVisits(
     url: filterGoogleUrl(entry.url, filterEnabled),
   }));
   const info = await getSyncInfo();
-  const db = await openDB();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
-  const tx = db.transaction(stores, "readwrite");
+  const tx = await database.transaction(stores, "readwrite");
   const store = tx.objectStore("visits");
   const outbox = info ? tx.objectStore("sync_outbox") : undefined;
   const firstUpdatedAt = Date.now();
@@ -311,8 +294,7 @@ export async function updateVisitMetadata(
   url = filterGoogleUrl(url, await getGoogleUrlFilterEnabled());
   const info = await getSyncInfo();
   const stores = info ? ["visits", "sync_outbox"] : ["visits"];
-  const db = await openDB();
-  const tx = db.transaction(stores, "readwrite");
+  const tx = await database.transaction(stores, "readwrite");
   const store = tx.objectStore("visits");
   const cursor = await requestResult<IDBCursorWithValue | null>(
     store.index("url").openCursor(IDBKeyRange.only(url), "prev"),
@@ -344,8 +326,7 @@ export async function updateVisitMetadata(
 }
 
 export async function getAllVisits(): Promise<HistoryEntry[]> {
-  const db = await openDB();
-  const tx = db.transaction("visits", "readonly");
+  const tx = await database.transaction("visits", "readonly");
   const request = tx.objectStore("visits").index("visitedAt").openCursor(null, "prev");
   const results: HistoryEntry[] = [];
   return new Promise((resolve, reject) => {
@@ -366,8 +347,7 @@ export async function getAllVisits(): Promise<HistoryEntry[]> {
 
 export async function deleteVisit(id: number): Promise<void> {
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["visits", "sync_outbox"] : ["visits"], "readwrite");
+  const tx = await database.transaction(info ? ["visits", "sync_outbox"] : ["visits"], "readwrite");
   const store = tx.objectStore("visits");
   const existing = await requestResult<HistoryEntry | undefined>(store.get(id));
   if (existing) {
@@ -390,8 +370,7 @@ export async function deleteVisit(id: number): Promise<void> {
 
 export async function clearAllVisits(): Promise<void> {
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["visits", "sync_outbox"] : ["visits"], "readwrite");
+  const tx = await database.transaction(info ? ["visits", "sync_outbox"] : ["visits"], "readwrite");
   const store = tx.objectStore("visits");
   if (info) {
     const entries = await requestResult<HistoryEntry[]>(store.getAll());
@@ -418,8 +397,7 @@ export async function getVisitsPage(
   page: number,
   perPage: number,
 ): Promise<{ items: HistoryEntry[]; total: number }> {
-  const db = await openDB();
-  const tx = db.transaction("visits", "readonly");
+  const tx = await database.transaction("visits", "readonly");
   const store = tx.objectStore("visits");
   const skip = page * perPage;
   const totalPromise = requestResult<number>(store.count());
@@ -458,8 +436,7 @@ export async function searchVisitsPage(
 ): Promise<{ items: HistoryEntry[]; total: number }> {
   const q = query.toLowerCase();
   const start = page * perPage;
-  const db = await openDB();
-  const tx = db.transaction("visits", "readonly");
+  const tx = await database.transaction("visits", "readonly");
   const request = tx.objectStore("visits").index("visitedAt").openCursor(null, "prev");
   const items: HistoryEntry[] = [];
   let total = 0;
@@ -486,8 +463,10 @@ export async function searchVisitsPage(
 export async function addBookmarks(entries: BookmarkInput[]): Promise<void> {
   if (entries.length === 0) return;
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["bookmarks", "sync_outbox"] : ["bookmarks"], "readwrite");
+  const tx = await database.transaction(
+    info ? ["bookmarks", "sync_outbox"] : ["bookmarks"],
+    "readwrite",
+  );
   const store = tx.objectStore("bookmarks");
   const outbox = info ? tx.objectStore("sync_outbox") : undefined;
   const now = Date.now();
@@ -508,8 +487,10 @@ export async function addBookmarks(entries: BookmarkInput[]): Promise<void> {
 
 export async function removeBookmark(id: number): Promise<void> {
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["bookmarks", "sync_outbox"] : ["bookmarks"], "readwrite");
+  const tx = await database.transaction(
+    info ? ["bookmarks", "sync_outbox"] : ["bookmarks"],
+    "readwrite",
+  );
   const store = tx.objectStore("bookmarks");
   const existing = await requestResult<BookmarkEntry | undefined>(store.get(id));
   if (existing) {
@@ -533,9 +514,8 @@ export async function removeBookmark(id: number): Promise<void> {
 /** Toggle a bookmark in one transaction and return its new state. */
 export async function toggleBookmark(entry: BookmarkInput): Promise<boolean> {
   const info = await getSyncInfo();
-  const db = await openDB();
   const stores = info ? ["bookmarks", "sync_outbox"] : ["bookmarks"];
-  const tx = db.transaction(stores, "readwrite");
+  const tx = await database.transaction(stores, "readwrite");
   const store = tx.objectStore("bookmarks");
   const existing = await requestResult<BookmarkEntry | undefined>(
     store.index("url").get(entry.url),
@@ -575,8 +555,10 @@ export async function updateBookmark(
   changes: Partial<Pick<BookmarkEntry, "name" | "url" | "folder">>,
 ): Promise<void> {
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["bookmarks", "sync_outbox"] : ["bookmarks"], "readwrite");
+  const tx = await database.transaction(
+    info ? ["bookmarks", "sync_outbox"] : ["bookmarks"],
+    "readwrite",
+  );
   const store = tx.objectStore("bookmarks");
   const existing = await requestResult<BookmarkEntry | undefined>(store.get(id));
   if (!existing) {
@@ -596,8 +578,10 @@ export async function updateBookmark(
 export async function moveBookmarksToFolder(fromFolder: string, toFolder: string): Promise<void> {
   if (fromFolder === toFolder) return;
   const info = await getSyncInfo();
-  const db = await openDB();
-  const tx = db.transaction(info ? ["bookmarks", "sync_outbox"] : ["bookmarks"], "readwrite");
+  const tx = await database.transaction(
+    info ? ["bookmarks", "sync_outbox"] : ["bookmarks"],
+    "readwrite",
+  );
   const store = tx.objectStore("bookmarks");
   const outbox = info ? tx.objectStore("sync_outbox") : undefined;
   const entries = await requestResult<BookmarkEntry[]>(store.getAll());
@@ -616,8 +600,7 @@ export async function moveBookmarksToFolder(fromFolder: string, toFolder: string
 }
 
 export async function getBookmarkByUrl(url: string): Promise<BookmarkEntry | undefined> {
-  const db = await openDB();
-  const tx = db.transaction("bookmarks", "readonly");
+  const tx = await database.transaction("bookmarks", "readonly");
   const result = await requestResult<BookmarkEntry | undefined>(
     tx.objectStore("bookmarks").index("url").get(url),
   );
@@ -625,8 +608,7 @@ export async function getBookmarkByUrl(url: string): Promise<BookmarkEntry | und
 }
 
 export async function getAllBookmarks(): Promise<BookmarkEntry[]> {
-  const db = await openDB();
-  const tx = db.transaction("bookmarks", "readonly");
+  const tx = await database.transaction("bookmarks", "readonly");
   const request = tx.objectStore("bookmarks").index("createdAt").openCursor(null, "prev");
   const results: BookmarkEntry[] = [];
   return new Promise((resolve, reject) => {
@@ -648,8 +630,7 @@ export async function getAllBookmarks(): Promise<BookmarkEntry[]> {
 // --- Sync storage ---
 
 export async function getOutbox(limit = 100): Promise<OutboxEntry[]> {
-  const db = await openDB();
-  const tx = db.transaction("sync_outbox", "readonly");
+  const tx = await database.transaction("sync_outbox", "readonly");
   const result = await requestResult<OutboxEntry[]>(
     tx.objectStore("sync_outbox").getAll(undefined, limit),
   );
@@ -657,8 +638,7 @@ export async function getOutbox(limit = 100): Promise<OutboxEntry[]> {
 }
 
 export async function getSyncState(): Promise<SyncState> {
-  const db = await openDB();
-  const tx = db.transaction("sync_state", "readonly");
+  const tx = await database.transaction("sync_state", "readonly");
   const store = tx.objectStore("sync_state");
   const [cursor, bootstrap, pendingDeletionIds] = await Promise.all([
     requestResult<{ key: string; value: unknown } | undefined>(store.get("cursor")),
@@ -680,9 +660,8 @@ export async function getSyncState(): Promise<SyncState> {
 }
 
 export async function resetSyncState(clearOutbox = false): Promise<void> {
-  const db = await openDB();
   const stores = clearOutbox ? ["sync_state", "sync_outbox"] : ["sync_state"];
-  const tx = db.transaction(stores, "readwrite");
+  const tx = await database.transaction(stores, "readwrite");
   const store = tx.objectStore("sync_state");
   store.put({ key: "cursor", value: 0 });
   store.put({ key: "bootstrap", value: "pending" });
@@ -694,8 +673,10 @@ export async function resetSyncState(clearOutbox = false): Promise<void> {
 export async function enqueueBootstrap(): Promise<boolean> {
   const info = await getSyncInfo();
   if (!info) return false;
-  const db = await openDB();
-  const tx = db.transaction(["visits", "bookmarks", "sync_outbox", "sync_state"], "readwrite");
+  const tx = await database.transaction(
+    ["visits", "bookmarks", "sync_outbox", "sync_state"],
+    "readwrite",
+  );
   const state = await requestResult<{ key: string; value: unknown } | undefined>(
     tx.objectStore("sync_state").get("bootstrap"),
   );
@@ -725,8 +706,7 @@ export async function enqueueBootstrap(): Promise<boolean> {
 
 export async function applyRemoteChanges(changes: RemoteChange[]): Promise<void> {
   if (changes.length === 0) return;
-  const db = await openDB();
-  const tx = db.transaction(["visits", "bookmarks"], "readwrite");
+  const tx = await database.transaction(["visits", "bookmarks"], "readwrite");
   for (const change of changes) {
     const store = tx.objectStore(change.kind === "history" ? "visits" : "bookmarks");
     const current = await requestResult<HistoryEntry | BookmarkEntry | undefined>(
@@ -805,8 +785,7 @@ export async function commitSyncBatch(
   cursor: number,
   pendingDeletionIds: number[],
 ): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction(["sync_outbox", "sync_state"], "readwrite");
+  const tx = await database.transaction(["sync_outbox", "sync_state"], "readwrite");
   const store = tx.objectStore("sync_outbox");
   for (const operationId of operationIds) store.delete(operationId);
   tx.objectStore("sync_state").put({ key: "cursor", value: cursor });
@@ -815,8 +794,7 @@ export async function commitSyncBatch(
 }
 
 export async function markBootstrapComplete(): Promise<void> {
-  const db = await openDB();
-  const tx = db.transaction("sync_state", "readwrite");
+  const tx = await database.transaction("sync_state", "readwrite");
   tx.objectStore("sync_state").put({ key: "bootstrap", value: "complete" });
   return transactionDone(tx);
 }
