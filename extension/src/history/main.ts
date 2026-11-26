@@ -7,6 +7,7 @@ import {
   clearAllVisits,
   type HistoryEntry,
 } from "../db.ts";
+import { bindSearchInput, focusSearchShortcut } from "../search-input.ts";
 import { requestSync } from "../sync.ts";
 // import { extensionApi } from "../extension-api.ts";
 
@@ -20,6 +21,15 @@ let perPage = DEFAULT_PER_PAGE;
 let totalCount = 0;
 let searchQuery = "";
 let currentItems: HistoryEntry[] = [];
+let loadSequence = 0;
+let pendingPageFocus: number | null = null;
+let pendingListFocus: number | null = null;
+
+let searchInput!: HTMLInputElement;
+let statsEl!: HTMLElement;
+let resultsCountEl!: HTMLElement;
+let listEl!: HTMLElement;
+let paginationEl!: HTMLElement;
 
 type HistoryRow =
   | { kind: "date"; key: string; date: string; count: number }
@@ -117,10 +127,63 @@ function renderHistoryRow(row: HistoryRow): string {
   `;
 }
 
-function render() {
-  const totalPages = Math.ceil(totalCount / perPage);
-  const rows = buildHistoryRows(currentItems);
+/**
+ * Build the static chrome once so the search box (and its focus/selection)
+ * survives list updates.
+ */
+function initShell() {
+  app.innerHTML = `
+    <header>
+      <h1>無限の歴史と星々</h1>
+      <div class="stats" id="stats"></div>
+      <a class="nav-link" href="/bookmarks/index.html">ブックマーク</a>
+    </header>
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="URL・タイトルで検索..." autofocus />
+      <button id="clear-all" class="danger">全削除</button>
+    </div>
+    <div class="results-count" id="results-count"></div>
+    <div id="history-list"></div>
+    <div id="pagination"></div>
+  `;
 
+  searchInput = app.querySelector<HTMLInputElement>("#search")!;
+  statsEl = app.querySelector<HTMLElement>("#stats")!;
+  resultsCountEl = app.querySelector<HTMLElement>("#results-count")!;
+  listEl = app.querySelector<HTMLElement>("#history-list")!;
+  paginationEl = app.querySelector<HTMLElement>("#pagination")!;
+
+  app.querySelector<HTMLButtonElement>("#clear-all")!.addEventListener("click", onClearAll);
+  listEl.addEventListener("click", onDelete);
+  paginationEl.addEventListener("click", onPageChange);
+}
+
+function render() {
+  document.title = `履歴 (${totalCount.toLocaleString()})`;
+  statsEl.textContent = `${totalCount.toLocaleString()} 件の履歴`;
+  resultsCountEl.textContent = `${totalCount === 0 ? "0" : `${currentPage * perPage + 1}〜${Math.min((currentPage + 1) * perPage, totalCount)}`} / ${totalCount.toLocaleString()} 件`;
+
+  if (currentItems.length === 0) {
+    listEl.innerHTML = `<div class="empty">${searchQuery ? "検索結果がありません" : "履歴がまだありません"}</div>`;
+  } else {
+    listEl.innerHTML = buildHistoryRows(currentItems).map(renderHistoryRow).join("");
+  }
+
+  // When an item was deleted, keep keyboard focus at the same position
+  // (falling back to the search box if the list is now empty).
+  if (pendingListFocus !== null) {
+    const index = pendingListFocus;
+    pendingListFocus = null;
+    const buttons = listEl.querySelectorAll<HTMLButtonElement>(".delete-btn");
+    const next = index >= 0 ? buttons[Math.min(index, buttons.length - 1)] : undefined;
+    (next ?? searchInput).focus();
+  }
+
+  renderPagination();
+}
+
+function renderPagination() {
+  const totalPages = Math.ceil(totalCount / perPage);
   let paginationHtml = "";
   if (totalPages > 1) {
     const pages: string[] = [];
@@ -141,61 +204,36 @@ function render() {
     );
     paginationHtml = `<div class="pagination">${pages.join("")}</div>`;
   }
+  paginationEl.innerHTML = paginationHtml;
 
-  app.innerHTML = `
-    <header>
-      <h1>無限の歴史と星々</h1>
-      <div class="stats">${totalCount.toLocaleString()} 件の履歴</div>
-      <a class="nav-link" href="/bookmarks/index.html">ブックマーク</a>
-    </header>
-    <div class="toolbar">
-      <input type="search" id="search" placeholder="URL・タイトルで検索..." value="${escapeHtml(searchQuery)}" autofocus />
-      <button id="clear-all" class="danger">全削除</button>
-    </div>
-    <div class="results-count">${totalCount === 0 ? "0" : `${currentPage * perPage + 1}〜${Math.min((currentPage + 1) * perPage, totalCount)}`} / ${totalCount.toLocaleString()} 件</div>
-    <div id="history-list"></div>
-    ${paginationHtml}
-  `;
-
-  document.querySelector<HTMLInputElement>("#search")!.addEventListener("input", onSearch);
-  document.querySelector<HTMLButtonElement>("#clear-all")!.addEventListener("click", onClearAll);
-  const list = document.querySelector<HTMLDivElement>("#history-list")!;
-  if (currentItems.length === 0) {
-    list.innerHTML = `<div class="empty">${searchQuery ? "検索結果がありません" : "履歴がまだありません"}</div>`;
-  } else {
-    list.addEventListener("click", onDelete);
-    list.innerHTML = rows.map(renderHistoryRow).join("");
+  // Keep keyboard focus on the page button the user just activated.
+  if (pendingPageFocus !== null) {
+    const page = pendingPageFocus;
+    pendingPageFocus = null;
+    paginationEl.querySelector<HTMLButtonElement>(`.page-btn[data-page="${page}"]`)?.focus();
   }
-  document.querySelectorAll<HTMLButtonElement>(".page-btn").forEach((btn) => {
-    btn.addEventListener("click", onPageChange);
-  });
 }
 
-let searchTimer: ReturnType<typeof setTimeout>;
-function onSearch(e: Event) {
-  searchQuery = (e.target as HTMLInputElement).value;
-  currentPage = 0;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(loadPage, 200);
-}
-
-function onPageChange(e: Event) {
-  const btn = e.currentTarget as HTMLButtonElement;
-  const page = Number(btn.dataset.page);
-  if (isNaN(page)) return;
+function onPageChange(event: Event) {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>(".page-btn");
+  if (!button || button.disabled) return;
+  const page = Number(button.dataset.page);
+  if (!Number.isSafeInteger(page) || page < 0) return;
   currentPage = page;
-  loadPage();
+  pendingPageFocus = page;
+  void loadPage({ scrollToTop: true });
 }
 
-async function onDelete(e: Event) {
-  const target = e.target as HTMLElement;
+async function onDelete(event: Event) {
+  const target = event.target as HTMLElement;
   const btn = target.closest<HTMLButtonElement>(".delete-btn");
   if (!btn) return;
   const id = Number(btn.dataset.id);
   if (!Number.isSafeInteger(id)) return;
+  pendingListFocus = currentItems.findIndex((entry) => entry.id === id);
   await deleteVisit(id);
   void requestSync().catch((error: unknown) => console.error("Sync failed", error));
-  loadPage();
+  void loadPage();
 }
 
 async function onClearAll() {
@@ -203,19 +241,26 @@ async function onClearAll() {
   await clearAllVisits();
   void requestSync().catch((error: unknown) => console.error("Sync failed", error));
   currentPage = 0;
-  loadPage();
+  void loadPage();
 }
 
-async function loadPage() {
+async function loadPage(options: { scrollToTop?: boolean } = {}) {
+  // Typing fast can leave earlier queries in flight; only the newest result
+  // is allowed to touch the DOM.
+  const sequence = ++loadSequence;
+
   let result: { items: HistoryEntry[]; total: number };
   if (searchQuery) {
     result = await searchVisitsPage(searchQuery, currentPage, perPage);
   } else {
     result = await getVisitsPage(currentPage, perPage);
   }
+  if (sequence !== loadSequence) return;
+
   currentItems = result.items;
   totalCount = result.total;
   render();
+  if (options.scrollToTop) window.scrollTo({ top: 0 });
 }
 
 async function getPerPage(): Promise<number> {
@@ -225,9 +270,23 @@ async function getPerPage(): Promise<number> {
 }
 
 async function init() {
+  initShell();
+  searchInput.focus();
+  focusSearchShortcut(searchInput);
+  bindSearchInput(
+    searchInput,
+    (query) => {
+      searchQuery = query;
+      currentPage = 0;
+      pendingListFocus = null;
+      pendingPageFocus = null;
+      void loadPage({ scrollToTop: true });
+    },
+    { delay: 200 },
+  );
+
   perPage = await getPerPage();
   await loadPage();
-  document.title = `履歴 (${totalCount.toLocaleString()})`;
 }
 
 init();

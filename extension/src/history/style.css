@@ -203,6 +203,10 @@ button.danger:hover {
   opacity: 0.5;
 }
 
+.visit-item:focus-within .delete-btn {
+  opacity: 0.5;
+}
+
 .delete-btn:hover {
   opacity: 1 !important;
   color: var(--danger);

@@ -166,6 +166,10 @@ h1 {
   opacity: 0.7;
 }
 
+.folder-row:focus-within .remove-folder {
+  opacity: 0.7;
+}
+
 .bookmark-content {
   min-width: 0;
 }
@@ -218,6 +222,10 @@ input[type="search"]::placeholder {
   background: var(--surface);
 }
 
+.bookmark-item:focus-within {
+  background: var(--surface);
+}
+
 .bookmark-item.editing {
   background: var(--surface);
 }
@@ -262,6 +270,10 @@ input[type="search"]::placeholder {
 }
 
 .bookmark-item:hover .bookmark-actions {
+  opacity: 1;
+}
+
+.bookmark-item:focus-within .bookmark-actions {
   opacity: 1;
 }
 
@@ -400,6 +412,10 @@ input[type="search"]::placeholder {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 2px 8px;
+  }
+
+  #folder-list {
+    display: contents;
   }
 
   .folder-heading {

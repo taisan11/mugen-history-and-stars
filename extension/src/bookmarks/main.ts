@@ -7,6 +7,11 @@ import {
   type BookmarkEntry,
 } from "../db.ts";
 import { getBookmarkFolders, saveBookmarkFolders } from "../bookmark-folders.ts";
+import {
+  bindSearchInput,
+  focusSearchShortcut,
+  type SearchInputHandle,
+} from "../search-input.ts";
 import { requestSync } from "../sync.ts";
 import "./style.css";
 
@@ -19,7 +24,13 @@ let folders: string[] = [];
 let editingId: number | null = null;
 let selectedFolder = "";
 let searchQuery = "";
-let searchTimer: ReturnType<typeof setTimeout>;
+
+let searchInput!: HTMLInputElement;
+let searchHandle!: SearchInputHandle;
+let statsEl!: HTMLElement;
+let folderListEl!: HTMLElement;
+let resultsCountEl!: HTMLElement;
+let listEl!: HTMLElement;
 
 function escapeHtml(s: string): string {
   const div = document.createElement("div");
@@ -79,13 +90,82 @@ function folderOptions(bookmark: BookmarkEntry): string {
   return options.join("");
 }
 
+/**
+ * Build the static chrome once so the search box (and its focus/selection)
+ * survives list updates.
+ */
+function initShell() {
+  app.innerHTML = `
+    <header>
+      <h1>ブックマーク</h1>
+      <div class="stats" id="stats"></div>
+      <nav class="nav-links" aria-label="ページ">
+        <a href="../history/index.html">履歴</a>
+        <a href="../options/index.html">設定</a>
+      </nav>
+    </header>
+    <div class="bookmark-layout">
+      <aside class="folder-panel">
+        <div class="folder-heading">
+          <h2>フォルダ</h2>
+          <button id="new-folder" title="新しいフォルダ">+</button>
+        </div>
+        <div id="folder-list"></div>
+      </aside>
+      <main class="bookmark-content">
+        <div class="toolbar">
+          <input type="search" id="search" placeholder="URL・タイトルで検索..." autofocus />
+        </div>
+        <div class="results-count" id="results-count"></div>
+        <div id="bookmark-list"></div>
+      </main>
+    </div>
+  `;
+
+  searchInput = app.querySelector<HTMLInputElement>("#search")!;
+  statsEl = app.querySelector<HTMLElement>("#stats")!;
+  folderListEl = app.querySelector<HTMLElement>("#folder-list")!;
+  resultsCountEl = app.querySelector<HTMLElement>("#results-count")!;
+  listEl = app.querySelector<HTMLElement>("#bookmark-list")!;
+
+  app.querySelector<HTMLButtonElement>("#new-folder")!.addEventListener("click", () => {
+    void onNewFolder();
+  });
+}
+
 function render() {
   const visibleBookmarks = getVisibleBookmarks();
-  const folderItems = [
+  statsEl.textContent = `${searchQuery ? `${visibleBookmarks.length} / ${bookmarks.length}` : bookmarks.length} 件`;
+  resultsCountEl.textContent = `${visibleBookmarks.length.toLocaleString()} 件`;
+  renderFolders();
+  renderList(visibleBookmarks);
+}
+
+function renderFolders() {
+  folderListEl.innerHTML = [
     folderButton("すべて", ""),
     folderButton("未分類", UNCATEGORIZED),
     ...folders.map((folder) => folderButton(folder, folder, true)),
   ].join("");
+
+  for (const button of folderListEl.querySelectorAll<HTMLButtonElement>(".folder-btn")) {
+    button.addEventListener("click", () => {
+      searchHandle.cancel();
+      selectedFolder = button.dataset.folder ?? "";
+      editingId = null;
+      render();
+      // The clicked button was just replaced; keep keyboard focus on it.
+      folderListEl.querySelector<HTMLButtonElement>(".folder-btn.active")?.focus();
+    });
+  }
+  for (const button of folderListEl.querySelectorAll<HTMLButtonElement>(".remove-folder")) {
+    button.addEventListener("click", (event) => {
+      void onRemoveFolder(event);
+    });
+  }
+}
+
+function renderList(visibleBookmarks: BookmarkEntry[]) {
   let listHtml = "";
 
   for (const bookmark of visibleBookmarks) {
@@ -127,78 +207,40 @@ function render() {
     listHtml = `<div class="empty">${searchQuery ? "検索結果がありません" : selectedFolder ? "このフォルダにブックマークがありません" : "ブックマークがまだありません"}</div>`;
   }
 
-  app.innerHTML = `
-    <header>
-      <h1>ブックマーク</h1>
-      <div class="stats">${searchQuery ? `${visibleBookmarks.length} / ${bookmarks.length}` : bookmarks.length} 件</div>
-      <nav class="nav-links" aria-label="ページ">
-        <a href="../history/index.html">履歴</a>
-        <a href="../options/index.html">設定</a>
-      </nav>
-    </header>
-    <div class="bookmark-layout">
-      <aside class="folder-panel">
-        <div class="folder-heading">
-          <h2>フォルダ</h2>
-          <button id="new-folder" title="新しいフォルダ">+</button>
-        </div>
-        ${folderItems}
-      </aside>
-      <main class="bookmark-content">
-        <div class="toolbar">
-          <input type="search" id="search" placeholder="URL・タイトルで検索..." value="${escapeHtml(searchQuery)}" autofocus />
-        </div>
-        <div class="results-count">${visibleBookmarks.length.toLocaleString()} 件</div>
-        <div id="bookmark-list">${listHtml}</div>
-      </main>
-    </div>
-  `;
+  listEl.innerHTML = listHtml;
 
-  document.querySelector<HTMLInputElement>("#search")!.addEventListener("input", onSearch);
-  document.querySelector<HTMLButtonElement>("#new-folder")!.addEventListener("click", () => {
-    void onNewFolder();
-  });
-  document.querySelectorAll<HTMLButtonElement>(".folder-btn").forEach((button) => {
+  for (const button of listEl.querySelectorAll<HTMLButtonElement>(".edit-btn")) {
     button.addEventListener("click", () => {
-      selectedFolder = button.dataset.folder ?? "";
-      editingId = null;
+      searchHandle.cancel();
+      const id = Number(button.dataset.id);
+      editingId = id;
       render();
+      const input = listEl.querySelector<HTMLInputElement>(
+        `.bookmark-item[data-id="${id}"] .edit-name`,
+      );
+      input?.focus();
+      input?.select();
     });
-  });
-  document.querySelectorAll<HTMLButtonElement>(".remove-folder").forEach((button) => {
-    button.addEventListener("click", (event) => {
-      void onRemoveFolder(event);
-    });
-  });
-  document.querySelectorAll<HTMLButtonElement>(".edit-btn").forEach((button) => {
-    button.addEventListener("click", () => {
-      editingId = Number(button.dataset.id);
-      render();
-    });
-  });
-  document.querySelectorAll<HTMLButtonElement>(".delete-btn").forEach((button) => {
+  }
+  for (const button of listEl.querySelectorAll<HTMLButtonElement>(".delete-btn")) {
     button.addEventListener("click", onDelete);
-  });
-  document.querySelectorAll<HTMLButtonElement>(".save-btn").forEach((button) => {
+  }
+  for (const button of listEl.querySelectorAll<HTMLButtonElement>(".save-btn")) {
     button.addEventListener("click", onSave);
-  });
-  document.querySelectorAll<HTMLButtonElement>(".cancel-btn").forEach((button) => {
+  }
+  for (const button of listEl.querySelectorAll<HTMLButtonElement>(".cancel-btn")) {
     button.addEventListener("click", () => {
+      const id = editingId;
       editingId = null;
       render();
+      focusEditButton(id);
     });
-  });
+  }
 }
 
-function onSearch(event: Event) {
-  searchQuery = (event.target as HTMLInputElement).value;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
-    render();
-    const input = document.querySelector<HTMLInputElement>("#search");
-    input?.focus();
-    input?.setSelectionRange(searchQuery.length, searchQuery.length);
-  }, 200);
+function focusEditButton(id: number | null) {
+  if (id === null) return;
+  listEl.querySelector<HTMLButtonElement>(`.bookmark-item[data-id="${id}"] .edit-btn`)?.focus();
 }
 
 async function onNewFolder() {
@@ -225,19 +267,27 @@ async function onRemoveFolder(event: Event) {
   void requestSync().catch((error: unknown) => console.error("Sync failed", error));
   bookmarks = await getAllBookmarks();
   render();
+  folderListEl.querySelector<HTMLButtonElement>(".folder-btn.active")?.focus();
 }
 
 async function onDelete(event: Event) {
   const id = Number((event.currentTarget as HTMLButtonElement).dataset.id);
+  const removedIndex = getVisibleBookmarks().findIndex((bookmark) => bookmark.id === id);
   await removeBookmark(id);
   void requestSync().catch((error: unknown) => console.error("Sync failed", error));
   bookmarks = await getAllBookmarks();
   render();
+
+  // Keep keyboard focus inside the list, at the position the item used to occupy.
+  const editButtons = listEl.querySelectorAll<HTMLButtonElement>(".edit-btn");
+  const next = removedIndex >= 0 ? editButtons[Math.min(removedIndex, editButtons.length - 1)] : undefined;
+  if (next) next.focus();
+  else searchInput.focus();
 }
 
 async function onSave(event: Event) {
   const id = Number((event.currentTarget as HTMLButtonElement).dataset.id);
-  const item = document.querySelector<HTMLDivElement>(`.bookmark-item[data-id="${id}"]`)!;
+  const item = listEl.querySelector<HTMLDivElement>(`.bookmark-item[data-id="${id}"]`)!;
   const name = (item.querySelector(".edit-name") as HTMLInputElement).value.trim();
   const url = (item.querySelector(".edit-url") as HTMLInputElement).value.trim();
   const folder = (item.querySelector(".edit-folder") as HTMLSelectElement).value;
@@ -247,9 +297,22 @@ async function onSave(event: Event) {
   editingId = null;
   bookmarks = await getAllBookmarks();
   render();
+  focusEditButton(id);
 }
 
 async function init() {
+  initShell();
+  searchInput.focus();
+  focusSearchShortcut(searchInput);
+  searchHandle = bindSearchInput(
+    searchInput,
+    (query) => {
+      searchQuery = query;
+      render();
+    },
+    { delay: 120 },
+  );
+
   bookmarks = await getAllBookmarks();
   const savedFolders = await getBookmarkFolders();
   folders = [
